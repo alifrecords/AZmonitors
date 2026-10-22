@@ -1,0 +1,82 @@
+# AZ Monitoring — Windows (VST3) va macOS (VST3 + AU, universal) uchun avtomatik yig'ish.
+# AAX (Pro Tools): repo Settings -> Secrets ga AAX_SDK_URL (Avid AAX SDK zip havolasi) qo'shilsa, AAX ham yig'iladi.
+name: Build AZ Monitoring
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-14
+            name: macOS
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AAX SDK (ixtiyoriy)
+        id: aax
+        shell: bash
+        env:
+          AAX_SDK_URL: ${{ secrets.AAX_SDK_URL }}
+        run: |
+          if [ -n "$AAX_SDK_URL" ]; then
+            curl -sSL -o aax.zip "$AAX_SDK_URL"
+            mkdir aax && cd aax && unzip -q ../aax.zip && cd ..
+            SDK=$(dirname "$(dirname "$(find "$PWD/aax" -path "*/Interfaces/AAX.h" -print -quit)")")
+            echo "flag=-DAAX_SDK_PATH=$SDK" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ steps.aax.outputs.flag }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: DSP testlari (EBU Tech 3341 / 3342)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: pluginval (strictness 10)
+        shell: bash
+        run: |
+          VST3=$(find build -name "AZ Monitoring.vst3" -type d | head -1)
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            curl -sSL -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip
+            unzip -q pv.zip && ./pluginval.exe --strictness-level 10 --validate-in-process --validate "$VST3"
+          else
+            curl -sSL -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+            unzip -q pv.zip && ./pluginval.app/Contents/MacOS/pluginval --strictness-level 10 --validate-in-process --validate "$VST3"
+          fi
+
+      - name: auval (Logic Pro uchun AU tekshiruvi)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/AZMonitoring_artefacts/Release/AU/AZ Monitoring.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx AzMn Azmx
+
+      - name: Paketlash
+        shell: bash
+        run: |
+          OUT="AZ-Monitoring-${{ matrix.name }}"
+          mkdir -p "$OUT"
+          cp -R build/AZMonitoring_artefacts/Release/VST3/*.vst3 "$OUT/"
+          [ -d build/AZMonitoring_artefacts/Release/AU ]  && cp -R build/AZMonitoring_artefacts/Release/AU/*.component "$OUT/"
+          [ -d build/AZMonitoring_artefacts/Release/AAX ] && cp -R build/AZMonitoring_artefacts/Release/AAX/*.aaxplugin "$OUT/"
+          if [ "$RUNNER_OS" == "Windows" ]; then cp installer/install-windows.bat "$OUT/"; else cp installer/install-mac.command "$OUT/"; chmod +x "$OUT/install-mac.command"; fi
+          cp README.md "$OUT/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AZ-Monitoring-${{ matrix.name }}
+          path: AZ-Monitoring-${{ matrix.name }}
