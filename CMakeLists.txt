@@ -85,6 +85,38 @@ foreach(fmt ${AZ_FORMATS})
     endif()
 endforeach()
 
+# ---------------------------------------------------------------------------
+# AZ Plugin Scanner: plaginlarni DAW'dan tashqarida skanerlaydigan yordamchi dastur.
+# Plagin bundle ichiga (Contents/Resources) joylanadi.
+# ---------------------------------------------------------------------------
+juce_add_console_app(AZPluginScanner PRODUCT_NAME "AZPluginScanner")
+target_sources(AZPluginScanner PRIVATE Source/scanner/ScannerMain.cpp)
+target_compile_definitions(AZPluginScanner PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+    JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=1 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_LV2=0)
+target_link_libraries(AZPluginScanner PRIVATE juce::juce_audio_processors juce::juce_recommended_config_flags)
+if(MSVC)
+    # Konsol oynasi ochilmasin
+    set_target_properties(AZPluginScanner PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(AZPluginScanner PRIVATE /ENTRY:mainCRTStartup)
+endif()
+
+foreach(fmt VST3 AU AAX)
+    if(TARGET AZMonitoring_${fmt})
+        add_dependencies(AZMonitoring_${fmt} AZPluginScanner)
+        add_custom_command(TARGET AZMonitoring_${fmt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AZMonitoring_${fmt}>/../Resources"
+            COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:AZPluginScanner>" "$<TARGET_FILE_DIR:AZMonitoring_${fmt}>/../Resources/"
+            VERBATIM)
+        if(APPLE)
+            add_custom_command(TARGET AZMonitoring_${fmt} POST_BUILD
+                COMMAND codesign --force --sign - "$<TARGET_FILE_DIR:AZMonitoring_${fmt}>/../Resources/$<TARGET_FILE_NAME:AZPluginScanner>"
+                COMMAND codesign --force --sign - "$<TARGET_FILE_DIR:AZMonitoring_${fmt}>/../.."
+                VERBATIM)
+        endif()
+    endif()
+endforeach()
+
 target_compile_definitions(AZMonitoring PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -144,10 +176,12 @@ endif()
 # ---------------------------------------------------------------------------
 option(AZ_BUILD_TEST_PLUGINS "Rack sinov plaginlarini qurish" OFF)
 if(AZ_BUILD_TEST_PLUGINS)
-    foreach(kind Comp EQ)
+    foreach(kind Comp EQ Crash)
         string(TOUPPER ${kind} KIND)
         if(kind STREQUAL "Comp")
             set(CODE Atcp)
+        elseif(kind STREQUAL "Crash")
+            set(CODE Atcr)
         else()
             set(CODE Ateq)
         endif()

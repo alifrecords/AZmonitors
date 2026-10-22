@@ -766,6 +766,10 @@ void BrowserOverlay::paint (juce::Graphics& g)
         g.setColour (accent); g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * cat.getProgress()), 3.0f);
         g.setColour (text3); g.setFont (sans (12.0f));
         g.drawText (cat.getStatus(), bar.withY (bar.getBottom() + 10).withHeight (18).expanded (100, 0), juce::Justification::centred, true);
+        g.setColour (cat.isSafeScan() ? ok : warn); g.setFont (sans (12.0f));
+        g.drawText (cat.isSafeScan() ? juce::String ("Xavfsiz rejim: har bir plagin alohida jarayonda tekshiriladi - biror plagin qulasa ham DAW yopilmaydi")
+                                     : juce::String ("Ogohlantirish: AZPluginScanner topilmadi - plaginlar DAW ichida tekshirilmoqda"),
+                    bar.withY (bar.getBottom() + 34).withHeight (18).expanded (160, 0), juce::Justification::centred, true);
     }
     else if (all.isEmpty())
     {
@@ -805,6 +809,12 @@ void BrowserOverlay::paint (juce::Graphics& g)
     g.drawText ("Eslatma", juce::Rectangle<float> (rx + 12, ry + 10, 246, 16), juce::Justification::centredLeft);
     drawWrapped (&g, note, { rx + 12, ry + 30, 246, nh }, sans (11.5f), text2);
 
+    if (status.isEmpty() && ! cat.isScanning() && ! cat.getLastFailed().isEmpty())
+    {
+        g.setColour (warn); g.setFont (sans (12.0f));
+        g.drawText (juce::String (cat.getLastFailed().size()) + " ta plagin ochilmadi (qulab tushdi yoki o'rnatilishi to'liq emas): " + cat.getLastFailed().joinIntoString (", "),
+                    juce::Rectangle<float> (m.getX() + 22, m.getBottom() - 46, 560, 30), juce::Justification::centredLeft, true);
+    }
     if (status.isNotEmpty())
     {
         g.setColour (status.startsWith ("Xato") ? bad : text2);

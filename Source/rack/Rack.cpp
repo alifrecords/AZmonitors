@@ -3,6 +3,80 @@
 namespace az
 {
 //==============================================================================
+// XAVFSIZ SKANERLASH: har bir plagin alohida jarayonda (AZPluginScanner) ochiladi.
+// Plagin qulasa — faqat yordamchi dastur yopiladi, DAW ishlashda davom etadi.
+//==============================================================================
+namespace
+{
+    juce::File findScannerExe()
+    {
+       #if JUCE_WINDOWS
+        const char* name = "AZPluginScanner.exe";
+       #else
+        const char* name = "AZPluginScanner";
+       #endif
+        const auto self = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+
+        // Plagin bundle ichida: .../AZ Monitoring.vst3/Contents/Resources/AZPluginScanner
+        for (auto dir = self.getParentDirectory(); dir.exists() && ! dir.isRoot(); dir = dir.getParentDirectory())
+            if (dir.getFileName() == "Contents")
+            {
+                const auto f = dir.getChildFile ("Resources").getChildFile (name);
+                if (f.existsAsFile()) return f;
+                break;
+            }
+        if (const auto f = self.getSiblingFile (name); f.existsAsFile()) return f;
+        return {};
+    }
+
+    class OutOfProcessScanner final : public juce::KnownPluginList::CustomScanner
+    {
+    public:
+        OutOfProcessScanner (juce::File exeFile, juce::File tempDir) : exe (std::move (exeFile)), tmp (std::move (tempDir)) {}
+
+        bool findPluginTypesFor (juce::AudioPluginFormat& format, juce::OwnedArray<juce::PluginDescription>& result,
+                                 const juce::String& fileOrIdentifier) override
+        {
+            if (! exe.existsAsFile())
+            {
+                format.findAllTypesForFile (result, fileOrIdentifier);   // zaxira: eski usul
+                return true;
+            }
+
+            tmp.createDirectory();
+            const auto out = tmp.getNonexistentChildFile ("scan", ".xml");
+            juce::ChildProcess child;
+            if (! child.start (juce::StringArray { exe.getFullPathName(), format.getName(), fileOrIdentifier, out.getFullPathName() }, 0))
+                return false;
+
+            // Waves kabi ko'p plaginli "shell" fayllar uzoq skanerlanadi — 3 daqiqagacha kutamiz
+            const auto started = juce::Time::getMillisecondCounter();
+            while (child.isRunning())
+            {
+                if (shouldExit()) { child.kill(); out.deleteFile(); return true; }
+                if (juce::Time::getMillisecondCounter() - started > 180000) { child.kill(); out.deleteFile(); return false; }
+                juce::Thread::sleep (40);
+            }
+            const auto code = child.getExitCode();
+
+            if (auto xml = juce::XmlDocument::parse (out))
+                for (auto* e : xml->getChildIterator())
+                {
+                    auto d = std::make_unique<juce::PluginDescription>();
+                    if (d->loadFromXml (*e)) result.add (d.release());
+                }
+            out.deleteFile();
+
+            // 0 = topildi, 3 = faylda effekt yo'q (xato emas); boshqa kod = plagin qulab tushdi
+            return code == 0 || code == 3 || ! result.isEmpty();
+        }
+
+    private:
+        juce::File exe, tmp;
+    };
+}
+
+//==============================================================================
 // KATALOG
 //==============================================================================
 PluginCatalog::PluginCatalog() : juce::Thread ("AZ plugin scan")
@@ -10,6 +84,8 @@ PluginCatalog::PluginCatalog() : juce::Thread ("AZ plugin scan")
     formats.addDefaultFormats();
     if (auto xml = juce::XmlDocument::parse (listFile()))
         list.recreateFromXml (*xml);
+    scannerExe = findScannerExe();
+    list.setCustomScanner (std::make_unique<OutOfProcessScanner> (scannerExe, dataDir().getChildFile ("scan_tmp")));
     list.addChangeListener (this);
 }
 
@@ -54,6 +130,8 @@ void PluginCatalog::run()
     dataDir().createDirectory();
     // Ro'yxat hech qachon oldindan tozalanmaydi: skanerlash to'xtatilsa ham eski plaginlar saqlanib qoladi
     const bool full = rescanAll.load();
+    if (full) list.clearBlacklistedFiles();   // to'liq qayta skanerlashda avval qulagan plaginlarga yana imkon beramiz
+    juce::StringArray failed;
 
     auto setStatus = [this] (const juce::String& s)
     {
@@ -79,6 +157,11 @@ void PluginCatalog::run()
             if (! scanner.scanNextFile (! full, name)) break;
             progress = ((float) i + scanner.getProgress()) / (float) juce::jmax (1, numFormats);
         }
+        for (auto& f : scanner.getFailedFiles())
+        {
+            list.addToBlacklist (f);   // keyingi skanerlashda vaqt yo'qotmaslik uchun
+            failed.add (juce::File::createFileWithoutCheckingPath (f).getFileNameWithoutExtension());
+        }
     }
 
     if (threadShouldExit())
@@ -97,7 +180,10 @@ void PluginCatalog::run()
 
     save();
     progress = 1.0f;
-    setStatus (juce::String (getEffects().size()) + " ta effekt plagini topildi");
+    { const juce::SpinLock::ScopedLockType sl (statusLock); lastFailed = failed; }
+    setStatus (juce::String (getEffects().size()) + " ta effekt plagini topildi"
+               + (failed.isEmpty() ? juce::String() : ", " + juce::String (failed.size()) + " ta plagin ochilmadi va o'tkazib yuborildi: "
+                                                       + failed.joinIntoString (", ")));
 }
 
 juce::Array<juce::PluginDescription> PluginCatalog::getEffects() const

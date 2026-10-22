@@ -47,6 +47,12 @@ public:
     }
 };
 
+#if AZTEST_CRASH
+// Yuklanishi bilan qulaydigan plagin: xavfsiz skanerlashni sinash uchun
+struct CrashOnLoad { CrashOnLoad() { if (std::getenv ("AZ_NO_CRASH") == nullptr) { volatile int* p = nullptr; *p = 42; } } };
+static CrashOnLoad crashOnLoad;
+#endif
+
 #if AZTEST_COMP
 class Plugin final : public TestProcessor
 {
@@ -71,7 +77,7 @@ private:
     juce::AudioParameterFloat *thr, *ratio, *att, *rel, *out;
     juce::dsp::Compressor<float> comp;
 };
-#else
+#else  // EQ (va Crash)
 class Plugin final : public TestProcessor
 {
 public:

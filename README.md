@@ -50,6 +50,8 @@ Imkoniyatlar:
 - **Preset.** Butun zanjirni `.azrack` fayl sifatida saqlash va boshqa loyihaga yuklash mumkin. Loyiha qayta ochilganda rack plaginlari va ularning sozlamalari avtomatik tiklanadi. Agar biror plagin boshqa kompyuterda o'rnatilmagan bo'lsa, uning sozlamalari baribir yo'qolmaydi.
 - **Plagin qo'shish oynasida** qidiruv va toifalar bor (EQ, Dinamika, De-esser, Saturatsiya, Reverb/Delay, UAD-2). Bundan tashqari **AZ tavsiyasi** chiqadi: tashxisga ko'ra zanjirga nima yetishmayotgani va sizda o'rnatilganlardan qaysi biri mos kelishi.
 
+**Xavfsiz skanerlash.** Plaginlar DAW ichida emas, plagin bilan birga keladigan alohida **AZPluginScanner** dasturida tekshiriladi. Biror plagin qulab tushsa (eski, buzilgan yoki o'rnatilishi to'liq bo'lmagan plaginlar), faqat shu yordamchi dastur yopiladi: Cubase, Ableton yoki Pro Tools ishlashda davom etadi. Qulagan plagin ro'yxatda "ochilmadi" deb ko'rsatiladi va keyingi skanerlashda o'tkazib yuboriladi. To'liq qayta skanerlashda unga yana bir imkon beriladi.
+
 **Birinchi ishga tushirish.** Plagin qo'shish oynasida **"Qayta skanerlash"** tugmasini bosing. AZ kompyuteringizdagi plaginlarni bir marta ro'yxatga oladi. Agar biror plagin skanerlash paytida DAW'ni yopib yuborsa, keyingi safar u avtomatik o'tkazib yuboriladi.
 
 **Cheklovlar:**

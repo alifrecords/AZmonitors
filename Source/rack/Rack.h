@@ -28,6 +28,10 @@ public:
 
     juce::AudioPluginFormatManager& getFormats() noexcept { return formats; }
 
+    /** true: har bir plagin alohida jarayonda skanerlanadi (DAW qulamaydi) */
+    bool isSafeScan() const noexcept { return scannerExe.existsAsFile(); }
+    juce::StringArray getLastFailed() const { const juce::SpinLock::ScopedLockType sl (statusLock); return lastFailed; }
+
     static juce::String categoryOf (const juce::PluginDescription&);   // EQ, Dinamika, De-esser, ...
     static bool isUad (const juce::PluginDescription&);
 
@@ -44,6 +48,8 @@ private:
     std::atomic<bool> rescanAll { false };
     mutable juce::SpinLock statusLock;
     juce::String status;
+    juce::StringArray lastFailed;
+    juce::File scannerExe;
 };
 
 //==============================================================================
