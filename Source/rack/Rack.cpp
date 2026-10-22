@@ -52,8 +52,8 @@ void PluginCatalog::run()
 {
     const auto pedal = dataDir().getChildFile ("scan_crash.txt");
     dataDir().createDirectory();
-    if (rescanAll.load())
-        list.clear();
+    // Ro'yxat hech qachon oldindan tozalanmaydi: skanerlash to'xtatilsa ham eski plaginlar saqlanib qoladi
+    const bool full = rescanAll.load();
 
     auto setStatus = [this] (const juce::String& s)
     {
@@ -76,10 +76,24 @@ void PluginCatalog::run()
             if (threadShouldExit()) break;
             const auto next = scanner.getNextPluginFileThatWillBeScanned();
             setStatus (format->getName() + ": " + juce::File::createFileWithoutCheckingPath (next).getFileNameWithoutExtension());
-            if (! scanner.scanNextFile (true, name)) break;
+            if (! scanner.scanNextFile (! full, name)) break;
             progress = ((float) i + scanner.getProgress()) / (float) juce::jmax (1, numFormats);
         }
     }
+
+    if (threadShouldExit())
+    {
+        // DAW yopildi yoki skanerlash to'xtatildi: yarim ro'yxatni diskka yozmaymiz
+        setStatus ("Skanerlash to'xtatildi - avvalgi ro'yxat saqlanib qoldi");
+        return;
+    }
+
+    // To'liq skanerlashdan keyin: kompyuterdan o'chirilgan plaginlarni ro'yxatdan olib tashlaymiz
+    if (full)
+        for (auto& d : list.getTypes())
+            for (int i = 0; i < formats.getNumFormats(); ++i)
+                if (auto* f = formats.getFormat (i); f->getName() == d.pluginFormatName && ! f->doesPluginStillExist (d))
+                    list.removeType (d);
 
     save();
     progress = 1.0f;
