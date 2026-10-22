@@ -105,125 +105,211 @@ void save (juce::Component& c, const juce::File& file)
 void pump (int ms) { juce::MessageManager::getInstance()->runDispatchLoopUntil (ms); }
 }
 
+namespace
+{
+    void setParam (juce::AudioPluginInstance& p, const juce::String& name, const juce::String& text)
+    {
+        for (auto* prm : p.getParameters())
+            if (prm->getName (40) == name) { prm->setValueNotifyingHost (prm->getValueForText (text)); return; }
+        std::printf ("  ! parametr topilmadi: %s\n", name.toRawUTF8());
+    }
+
+    juce::String paramText (juce::AudioPluginInstance& p, const juce::String& name)
+    {
+        for (auto* prm : p.getParameters())
+            if (prm->getName (40) == name) return prm->getCurrentValueAsText();
+        return "?";
+    }
+
+    void check (bool ok, const juce::String& what)
+    {
+        std::printf ("%s %s\n", ok ? "[ OK ]" : "[FAIL]", what.toRawUTF8());
+    }
+
+    double rmsOf (const juce::AudioBuffer<float>& b)
+    {
+        double s = 0;
+        for (int i = 0; i < b.getNumSamples(); ++i) s += (double) b.getSample (0, i) * b.getSample (0, i);
+        return std::sqrt (s / juce::jmax (1, b.getNumSamples()));
+    }
+}
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI gui;
     const juce::File outDir (argc > 1 ? juce::String (argv[1]) : juce::File::getCurrentWorkingDirectory().getFullPathName());
     outDir.createDirectory();
-
     const double sr = 48000.0;
-    const double seconds = 45.0;
+    const double seconds = 40.0;
     using Co = juce::dsp::IIR::Coefficients<float>;
 
-    // Zanjir: IN -> A EQ -> B LA-2A -> C Dyn3 Comp (haddan ortiq) -> D De-esser (kuchsiz) -> E EQ (konflikt) -> F Maxim (ta'sirsiz) -> Monitor
-    std::vector<Stage> stages {
-        { "EQ3 7-Band",       [] (auto& b, double s) { filter (b, Co::makeHighPass (s, 90.0f, 0.7f)); filter (b, Co::makeHighPass (s, 90.0f, 0.7f));
-                                                       filter (b, Co::makePeakFilter (s, 320.0f, 1.4f, juce::Decibels::decibelsToGain (-3.5f))); } },
-        { "UAD LA-2A",        [] (auto& b, double s) { compress (b, s, -30.0f, 3.0f, 10.0f, 150.0f, 2.0f); } },
-        { "Dyn3 Compressor",  [] (auto& b, double s) { compress (b, s, -40.0f, 10.0f, 0.2f, 35.0f, 10.0f); } },
-        { "Dyn3 De-Esser",    [] (auto& b, double s) { filter (b, Co::makeHighShelf (s, 7000.0f, 0.7f, juce::Decibels::decibelsToGain (-0.8f))); } },
-        { "EQ3 7-Band (2)",   [] (auto& b, double s) { filter (b, Co::makePeakFilter (s, 320.0f, 1.4f, juce::Decibels::decibelsToGain (4.0f)));
-                                                       filter (b, Co::makePeakFilter (s, 3500.0f, 1.2f, juce::Decibels::decibelsToGain (2.0f))); } },
-        { "Maxim",            [] (auto&, double) {} },
+    // DAW tomoni: xom vokal -> (AAX "EQ3 7-Band" — rack'ga yuklanmaydi) -> AZ Monitoring (rack ichida 4 plagin)
+    auto raw = makeVocal (sr, seconds);
+    auto dawOut = raw;
+    filter (dawOut, Co::makeHighPass (sr, 90.0f, 0.7f));
+    filter (dawOut, Co::makeHighPass (sr, 90.0f, 0.7f));
+
+    auto setChoice = [] (AZMonitoringProcessor& p, const char* id, int idx)
+    {
+        auto* c = dynamic_cast<juce::AudioParameterChoice*> (p.apvts.getParameter (id));
+        c->setValueNotifyingHost (c->convertTo0to1 ((float) idx));
     };
 
-    // Signal har bir nuqtada
-    std::vector<juce::AudioBuffer<float>> taps;
-    taps.push_back (makeVocal (sr, seconds));
-    for (auto& st : stages)
+    FakePlayHead headProbe, headMon;
+    AZMonitoringProcessor probe;
+    setChoice (probe, "group", 1); setChoice (probe, "mode", 1); setChoice (probe, "slot", 0);
+    probe.setPluginLabel ("Kirish (xom vokal)");
+    probe.setPlayConfigDetails (2, 2, sr, 512); probe.setPlayHead (&headProbe); probe.prepareToPlay (sr, 512);
+
+    auto mon = std::make_unique<AZMonitoringProcessor>();
+    setChoice (*mon, "group", 1);
+    mon->setPluginLabel ("AZ Monitoring");
+    mon->setPlayConfigDetails (2, 2, sr, 512); mon->setPlayHead (&headMon); mon->prepareToPlay (sr, 512);
+
+    // 1) Katalog skanerlash
+    auto& cat = mon->getCatalog();
+    cat.startScan (true);
+    while (cat.isScanning()) pump (100);
+    pump (100);
+    const auto effects = cat.getEffects();
+    std::printf ("Katalog: %d ta effekt (%s)\n", effects.size(), cat.getStatus().toRawUTF8());
+    juce::PluginDescription eqDesc, compDesc;
+    for (auto& d : effects)
     {
-        auto next = taps.back();
-        st.process (next, sr);
-        taps.push_back (std::move (next));
+        std::printf ("  - %s | %s | %s | toifa: %s\n", d.name.toRawUTF8(), d.manufacturerName.toRawUTF8(), d.pluginFormatName.toRawUTF8(),
+                     az::PluginCatalog::categoryOf (d).toRawUTF8());
+        if (d.name == "AZTest EQ") eqDesc = d;
+        if (d.name == "AZTest Comp") compDesc = d;
     }
+    check (eqDesc.name.isNotEmpty() && compDesc.name.isNotEmpty(), "Test plaginlari katalogda topildi");
+    check (! [&] { for (auto& d : effects) if (d.manufacturerName.contains ("Azimxodjayev")) return true; return false; }(),
+           "AZ Monitoring o'zini o'ziga yuklash ro'yxatida yo'q");
 
-    // Plagin nusxalari: IN probe, A..F probe'lar va Monitor (hammasi bitta guruhda)
-    std::vector<std::unique_ptr<AZMonitoringProcessor>> procs;
-    std::vector<std::unique_ptr<FakePlayHead>> heads;
-    for (size_t i = 0; i < taps.size(); ++i)
+    // 2) Rack: EQ (cut) -> Comp (yumshoq) -> Comp (haddan ortiq) -> EQ (konflikt)
+    check (mon->addPlugin (eqDesc, -1).isEmpty(), "R1 EQ yuklandi");
+    check (mon->addPlugin (compDesc, -1).isEmpty(), "R2 Comp yuklandi");
+    check (mon->addPlugin (compDesc, -1).isEmpty(), "R3 Comp yuklandi");
+    check (mon->addPlugin (eqDesc, -1).isEmpty(), "R4 EQ yuklandi");
     {
-        auto p = std::make_unique<AZMonitoringProcessor>();
-        p->setPlayConfigDetails (2, 2, sr, 512);
-        const bool isMonitor = i == taps.size() - 1;
-        auto setChoice = [&p] (const char* id, int idx)
-        {
-            auto* c = dynamic_cast<juce::AudioParameterChoice*> (p->apvts.getParameter (id));
-            c->setValueNotifyingHost (c->convertTo0to1 ((float) idx));
-        };
-        setChoice ("group", 1);
-        if (! isMonitor)
-        {
-            setChoice ("mode", 1);
-            setChoice ("slot", (int) i);  // 0 = IN, 1 = A ...
-            p->setPluginLabel (i == 0 ? juce::String ("Kirish (xom vokal)") : stages[i - 1].label);
-        }
-        heads.push_back (std::make_unique<FakePlayHead>());
-        p->setPlayHead (heads.back().get());
-        p->prepareToPlay (sr, 512);
-        procs.push_back (std::move (p));
+        auto s = mon->rack.getSlots();
+        setParam (*s[0]->plugin, "Frequency", "320"); setParam (*s[0]->plugin, "Gain", "-3.5");
+        setParam (*s[1]->plugin, "Threshold", "-30"); setParam (*s[1]->plugin, "Ratio", "3");  setParam (*s[1]->plugin, "Attack", "10"); setParam (*s[1]->plugin, "Output", "2");
+        setParam (*s[2]->plugin, "Threshold", "-42"); setParam (*s[2]->plugin, "Ratio", "12"); setParam (*s[2]->plugin, "Attack", "0.5");
+        setParam (*s[2]->plugin, "Release", "30"); setParam (*s[2]->plugin, "Output", "10");
+        setParam (*s[3]->plugin, "Frequency", "320"); setParam (*s[3]->plugin, "Gain", "4");
+        for (int i = 0; i < 4; ++i) std::printf ("  R%d %s: %s\n", i + 1, s[(size_t) i]->displayName().toRawUTF8(), s[(size_t) i]->formatLabel().toRawUTF8());
     }
+    mon->prepareToPlay (sr, 512);
+    check (mon->getLatencySamples() == 512, "PDC: rack kechikishi 2 x 256 = " + juce::String (mon->getLatencySamples()) + " sample DAW ga xabar qilindi");
 
-    // Monitor oxirgi probe (E) dan keyingi bo'lakni — "Maxim" ni — o'lchaydi
-    procs.back()->setPluginLabel ("Maxim");
-
+    // 3) Audio
     juce::AudioBuffer<float> block (2, 512);
     juce::MidiBuffer midi;
-    const int total = taps.front().getNumSamples();
+    const int total = raw.getNumSamples();
     for (int pos = 0; pos < total; pos += 512)
     {
         const int len = juce::jmin (512, total - pos);
-        for (size_t k = 0; k < procs.size(); ++k)
-        {
-            block.setSize (2, len, false, false, true);
-            block.copyFrom (0, 0, taps[k], 0, pos, len);
-            block.copyFrom (1, 0, taps[k], 0, pos, len);
-            heads[k]->time = pos / sr;
-            procs[k]->processBlock (block, midi);
-        }
-        if ((pos / 512) % 90 == 0) juce::Thread::sleep (15);   // fon tahlili ulgursin
+        block.setSize (2, len, false, false, true);
+        block.copyFrom (0, 0, raw, 0, pos, len); block.copyFrom (1, 0, raw, 0, pos, len);
+        headProbe.time = pos / sr; probe.processBlock (block, midi);
+        block.copyFrom (0, 0, dawOut, 0, pos, len); block.copyFrom (1, 0, dawOut, 0, pos, len);
+        headMon.time = pos / sr; mon->processBlock (block, midi);
+        if ((pos / 512) % 90 == 0) juce::Thread::sleep (15);
     }
     juce::Thread::sleep (1500);
 
-    // Diagnostika: har bir nuqtaning spektri (CSV)
+    az::Features fin; int pc = 0; juce::StringArray dups;
+    auto rep = mon->buildReport (fin, pc, dups);
+    std::printf ("\nZanjir: %d/100, %d bosqich\n", rep.chainScore, (int) rep.stages.size());
+    for (auto& st : rep.stages)
+        std::printf ("  [%s] %-12s %-28s rack=%d  %s\n", az::statusLabel (st.status).toRawUTF8(), st.slot.toRawUTF8(), st.name.toRawUTF8(), st.rackSlot, st.effect.toRawUTF8());
+    check (rep.stages.size() == 5, "5 bosqich: 1 DAW (probe orqali) + 4 rack plagini");
+
+    // 4) Tavsiyani qo'llash -> qaytarish
     {
-        juce::String csv = "hz";
-        std::vector<az::Features> fs;
-        for (auto& p : procs) { fs.push_back (p->analyzer.getSnapshot()); csv << "," << p->getPluginLabel(); }
-        csv << "\n";
-        for (int k = 0; k < az::kNumBands; ++k)
+        auto s = mon->rack.getSlots();
+        const az::StageResult* comp2 = nullptr;
+        for (auto& st : rep.stages) if (st.rackSlot == 2) comp2 = &st;
+        if (comp2 != nullptr)
         {
-            csv << juce::String (az::bandCentre (k), 0);
-            for (auto& f : fs) csv << "," << juce::String (f.bandLevel[(size_t) k], 2);
-            csv << "\n";
+            auto props = az::Rack::proposeFor (*s[2]->plugin, *comp2, fin, mon->currentProfile());
+            std::printf ("\nR3 tavsiyalari (%d):\n", (int) props.size());
+            for (auto& p : props) std::printf ("  %s: %s -> %s\n", p.name.toRawUTF8(), p.fromText.toRawUTF8(), p.toText.toRawUTF8());
+            check (props.size() >= 2, "Haddan ortiq kompressor uchun parametr tavsiyalari tuzildi");
+            az::Rack::apply (*s[2]->plugin, props);
+            std::printf ("  qo'llangandan keyin: Ratio %s, Attack %s, Threshold %s\n", paramText (*s[2]->plugin, "Ratio").toRawUTF8(),
+                         paramText (*s[2]->plugin, "Attack").toRawUTF8(), paramText (*s[2]->plugin, "Threshold").toRawUTF8());
+            check (paramText (*s[2]->plugin, "Ratio").startsWith ("4"), "Ratio 4:1 ga o'rnatildi");
+            az::Rack::apply (*s[2]->plugin, props, true);
+            check (paramText (*s[2]->plugin, "Ratio").startsWith ("12"), "Qaytarish: Ratio yana 12:1");
         }
-        outDir.getChildFile ("spektr.csv").replaceWithText (csv);
     }
 
-    auto& monitor = *procs.back();
+    // 5) Holatni saqlash / tiklash (DAW loyihasini qayta ochish)
     {
-        std::unique_ptr<AZMonitoringEditor> ed (dynamic_cast<AZMonitoringEditor*> (monitor.createEditor()));
-        ed->setSize (1280, 900);
-        const char* names[] = { "1_tahlil.png", "2_zanjir.png", "3_hisobot.png", "4_sozlamalar.png" };
-        for (int i = 0; i < 4; ++i)
+        juce::MemoryBlock mb;
+        mon->getStateInformation (mb);
+        AZMonitoringProcessor restored;
+        restored.setPlayConfigDetails (2, 2, sr, 512);
+        restored.prepareToPlay (sr, 512);
+        restored.setStateInformation (mb.getData(), (int) mb.getSize());
+        auto rs = restored.rack.getSlots();
+        check (rs.size() == 4, "Holat tiklandi: " + juce::String ((int) rs.size()) + " ta plagin");
+        if (rs.size() == 4 && rs[2]->plugin != nullptr)
+            check (paramText (*rs[2]->plugin, "Ratio") == "12.0:1" && paramText (*rs[3]->plugin, "Gain") == "4.0 dB",
+                   "Plagin parametrlari tiklandi (R3 Ratio " + paramText (*rs[2]->plugin, "Ratio") + ", R4 Gain " + paramText (*rs[3]->plugin, "Gain") + ")");
+        check (restored.getLatencySamples() == 512, "Tiklangandan keyin PDC = " + juce::String (restored.getLatencySamples()));
+        restored.rack.closeAllEditors();
+    }
+
+    // 6) Delta tinglash: R3 (kompressor) olib tashlagan signal
+    {
+        auto measure = [&] (int deltaSlot)
         {
-            ed->selectPage (i);
-            pump (400);
-            save (*ed, outDir.getChildFile (names[i]));
-        }
+            mon->rack.setDelta (deltaSlot);
+            juce::AudioBuffer<float> outAll (1, (int) (sr * 4));
+            for (int pos = 0; pos < outAll.getNumSamples(); pos += 512)
+            {
+                const int len = juce::jmin (512, outAll.getNumSamples() - pos);
+                block.setSize (2, len, false, false, true);
+                block.copyFrom (0, 0, dawOut, 0, (int) (sr * 10) + pos, len); block.copyFrom (1, 0, dawOut, 0, (int) (sr * 10) + pos, len);
+                mon->processBlock (block, midi);
+                outAll.copyFrom (0, pos, block, 0, 0, len);
+            }
+            return rmsOf (outAll);
+        };
+        const double normal = measure (-1), delta = measure (2), deltaEmpty = measure (3);
+        std::printf ("\nDelta: oddiy RMS %.4f, R3 delta RMS %.4f, R4 delta RMS %.4f\n", normal, delta, deltaEmpty);
+        check (delta > 0.0005 && delta != normal, "Delta tinglash: faqat R3 o'zgartirgan signal chiqdi");
+        mon->rack.setDelta (-1);
     }
+
+    // 6b) Rack ichidagi plaginning o'z oynasini ochish / yopish
     {
-        auto& probe = *procs[2];
-        std::unique_ptr<AZMonitoringEditor> ed (dynamic_cast<AZMonitoringEditor*> (probe.createEditor()));
-        ed->setSize (1280, 900);
-        pump (400);
-        save (*ed, outDir.getChildFile ("5_probe.png"));
+        mon->rack.openEditor (2);
+        pump (300);
+        bool found = false;
+        for (int i = 0; i < juce::Desktop::getInstance().getNumComponents(); ++i)
+            if (auto* c = juce::Desktop::getInstance().getComponent (i); c != nullptr && c->getName().contains ("AZTest Comp")) found = c->isVisible();
+        check (found, "R3 plaginining o'z oynasi ochildi");
+        mon->rack.closeAllEditors();
+        pump (100);
     }
 
-    // Matnli hisobot
-    az::Features f; int pc = 0; juce::StringArray d;
-    auto rep = monitor.buildReport (f, pc, d);
-    outDir.getChildFile ("hisobot.txt").replaceWithText (az::reportToText (rep, monitor.currentProfile(), monitor.currentStandard(), false, "Lead Vox (sintetik)"));
+    // 7) Suratlar
+    {
+        std::unique_ptr<AZMonitoringEditor> ed (dynamic_cast<AZMonitoringEditor*> (mon->createEditor()));
+        ed->setSize (1280, 900);
+        ed->selectPage (1); pump (400);
+        save (*ed, outDir.getChildFile ("6_rack.png"));
+        ed->selectPage (0); pump (300);
+        save (*ed, outDir.getChildFile ("1_tahlil.png"));
+        ed->selectPage (1); ed->showBrowser (-1); pump (400);
+        save (*ed, outDir.getChildFile ("7_plagin_qoshish.png"));
+    }
 
-    procs.clear();
+    outDir.getChildFile ("hisobot.txt").replaceWithText (az::reportToText (rep, mon->currentProfile(), mon->currentStandard(), false, "Lead Vox (sintetik)"));
+    mon->rack.closeAllEditors();
+    mon.reset();
     return 0;
 }

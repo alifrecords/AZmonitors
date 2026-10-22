@@ -32,7 +32,32 @@ Loudness o'lchovi EBU Tech 3341 test signallarida ±0.03 LU aniqlikda, LRA esa T
 
 **Master rejimida:** loudness tanlangan standartga solishtiriladi (Spotify/YouTube −14, Apple Music −16, EBU R128 −23, ATSC −24). True Peak chegarasi va PLR ham tekshiriladi.
 
-## Zanjir rejimi: har bir plaginning bahosi
+## AZ Rack: plaginlaringiz AZ Monitoring ichida (v0.2)
+
+**Rack · Zanjir** sahifasida **"+ Plagin qo'shish"** tugmasini bosing. Kompyuteringizga o'rnatilgan har qanday VST3 yoki AU plaginni AZ Monitoring ichiga yuklash mumkin, xuddi rack plaginlardagidek. Plaginlar rack ichida bo'lgani uchun AZ Monitoring quyidagilarni **aniq** biladi:
+
+- **Plagin nomi va formati**: VST3, AU yoki UAD-2.
+- **Signalga nima qilgani**, har bir plagin uchun alohida.
+- **Haqiqiy gain reduction va samarali ratio.** Plaginning kirish va chiqish signali bir vaqtda solishtiriladi, shuning uchun bu qiymatlar o'lchanadi, taxmin qilinmaydi.
+- **Parametrlari**: Threshold, Ratio, Attack, Release, Gain va boshqalar to'g'ridan-to'g'ri o'qiladi.
+
+Imkoniyatlar:
+
+- **Tavsiyani qo'llash.** Masalan, haddan ortiq siqayotgan kompressor uchun AZ aniq o'zgarishlarni taklif qiladi: "Ratio 12:1 → 4:1, Attack 0.5 → 15 ms". Avval o'zgarishlar ro'yxati ko'rsatiladi, siz tasdiqlaganingizdan keyingina qo'llanadi. **Qaytarish** tugmasi oldingi sozlamani tiklaydi.
+- **Delta tinglash.** Faqat tanlangan plagin olib tashlagan yoki qo'shgan ovozni eshitasiz (kechikish kompensatsiyasi bilan).
+- **Bypass, sudrab tartiblash, plagin oynasi, bundan keyin qo'shish, olib tashlash.**
+- **PDC.** Rack ichidagi plaginlarning kechikishi jamlanib, DAW'ga avtomatik xabar qilinadi.
+- **Preset.** Butun zanjirni `.azrack` fayl sifatida saqlash va boshqa loyihaga yuklash mumkin. Loyiha qayta ochilganda rack plaginlari va ularning sozlamalari avtomatik tiklanadi. Agar biror plagin boshqa kompyuterda o'rnatilmagan bo'lsa, uning sozlamalari baribir yo'qolmaydi.
+- **Plagin qo'shish oynasida** qidiruv va toifalar bor (EQ, Dinamika, De-esser, Saturatsiya, Reverb/Delay, UAD-2). Bundan tashqari **AZ tavsiyasi** chiqadi: tashxisga ko'ra zanjirga nima yetishmayotgani va sizda o'rnatilganlardan qaysi biri mos kelishi.
+
+**Birinchi ishga tushirish.** Plagin qo'shish oynasida **"Qayta skanerlash"** tugmasini bosing. AZ kompyuteringizdagi plaginlarni bir marta ro'yxatga oladi. Agar biror plagin skanerlash paytida DAW'ni yopib yuborsa, keyingi safar u avtomatik o'tkazib yuboriladi.
+
+**Cheklovlar:**
+- **Faqat AAX formatidagi plaginlar** (Avid Dyn3, EQ3, Pro Compressor va boshqalar) hech qanday boshqa plagin ichiga yuklanmaydi. Bu Avid'ning cheklovi. Bunday plaginlarni Pro Tools insertida qoldiring va oldiga Probe qo'ying: ular Rack sahifasida **DAW** belgisi bilan ko'rinadi.
+- **UAD-2 plaginlari** VST3/AU versiyasi orqali rack'da ishlaydi va UAD DSP kartangizdan foydalanadi.
+- **Tavsiyani avtomatik qo'llash** parametrlari matn ko'rinishida berilgan plaginlarda ishlaydi, masalan "4:1", "15 ms", "-18 dB". Knoblari 1–7 kabi raqamli shkalaga ega plaginlarda (masalan, ba'zi 1176 emulyatsiyalari) AZ buni ochiq aytadi va tavsiyani qo'lda qo'llashni so'raydi.
+
+## Zanjir rejimi: DAW insertlaridagi plaginlar (Probe)
 
 Bitta plagin ikki rejimda ishlaydi:
 - **Monitor** — eng oxirgi slotda turadi va hamma natijani ko'rsatadi.
@@ -138,14 +163,17 @@ Source/
   engine/Profiles.*      Janr etalonlari, standartlar, maxsus etalon yaratish
   engine/Diagnosis.*     Tashxis qoidalari va zanjir bahosi
   engine/ProbeRegistry.* Probe va Monitor o'rtasidagi aloqa (bir jarayon ichida)
-  gui/                   Interfeys: Tahlil, Zanjir, Hisobot, Sozlamalar, Probe
+  gui/                   Interfeys: Tahlil, Rack · Zanjir, Hisobot, Sozlamalar, Probe, Plagin qo'shish
+  rack/Rack.*            AZ Rack: plagin yuklash, PDC, delta, gain reduction o'lchovi, parametr tavsiyalari, katalog
   PluginProcessor.*      Plagin (bit-transparent, 0 latency)
 tests/DspTests.cpp       EBU Tech 3341/3342 testlari
-tests/Snapshot.cpp       Sintetik zanjir orqali interfeys suratlari
+tests/Snapshot.cpp       Rack integratsion sinovi (haqiqiy VST3 plaginlar bilan) va interfeys suratlari
+tests/testplugins/       Sinov uchun AZTest Comp va AZTest EQ plaginlari
 ```
 
-## Keyingi qadamlar (v0.2+)
-- **Delta tinglash** — faqat bitta plagin olib tashlagan yoki qo'shgan ovozni eshitish. Buning uchun probe'lar o'rtasida kechikishni kompensatsiya qilish kerak.
+## Keyingi qadamlar (v0.3+)
+- Probe'lar (DAW insertlari) uchun ham delta tinglash.
+- Mashhur plaginlar (1176, LA-2A, Pro-Q va boshqalar) uchun aniq parametr xaritalari.
 - Haqiqiy vokal yozuvlari to'plamida etalonlar va chegaralarni kalibrlash.
 - Professional miks qilingan stemlar to'plamida o'qitilgan ML modeli. U qoidalar tizimini to'ldiradi.
 - Sibilyant va muammo nuqtalarini DAW'da belgi (marker) sifatida eksport qilish.

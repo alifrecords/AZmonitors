@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(AZMonitoring VERSION 0.1.0 LANGUAGES C CXX)
+project(AZMonitoring VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +40,7 @@ if(DEFINED AAX_SDK_PATH AND EXISTS "${AAX_SDK_PATH}")
     message(STATUS "AZ Monitoring: AAX (Pro Tools) formati yoqildi")
 endif()
 
+set(AZ_HOST_VST3 1 CACHE STRING "VST3 plaginlarni rack ichiga yuklash (1/0)")
 option(AZ_COPY_AFTER_BUILD "Build'dan keyin plaginni tizim papkasiga nusxalash" OFF)
 
 juce_add_plugin(AZMonitoring
@@ -67,15 +68,32 @@ target_sources(AZMonitoring PRIVATE
     Source/engine/Diagnosis.cpp
     Source/engine/Profiles.cpp
     Source/engine/ProbeRegistry.cpp
-    Source/gui/Views.cpp)
+    Source/gui/Views.cpp
+    Source/gui/RackViews.cpp
+    Source/rack/Rack.cpp)
 
 target_include_directories(AZMonitoring PRIVATE Source)
+
+# Plagin ichida plagin yuklash (AZ Rack) bo'lgani uchun: JUCE belgilari xost bilan aralashmasin
+set_target_properties(AZMonitoring PROPERTIES CXX_VISIBILITY_PRESET hidden C_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+foreach(fmt ${AZ_FORMATS})
+    if(TARGET AZMonitoring_${fmt})
+        set_target_properties(AZMonitoring_${fmt} PROPERTIES CXX_VISIBILITY_PRESET hidden C_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+        if(UNIX AND NOT APPLE AND NOT fmt STREQUAL "Standalone")
+            target_link_options(AZMonitoring_${fmt} PRIVATE "-Wl,-Bsymbolic" "-Wl,--exclude-libs,ALL")
+        endif()
+    endif()
+endforeach()
 
 target_compile_definitions(AZMonitoring PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0)
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_PLUGINHOST_VST3=${AZ_HOST_VST3}
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_LADSPA=0
+    JUCE_PLUGINHOST_LV2=0)
 
 target_link_libraries(AZMonitoring
     PRIVATE
@@ -115,8 +133,34 @@ if(AZ_BUILD_SNAPSHOT)
     target_sources(AZSnapshot PRIVATE
         tests/Snapshot.cpp
         Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/dsp/Analyzer.cpp
-        Source/engine/Diagnosis.cpp Source/engine/Profiles.cpp Source/engine/ProbeRegistry.cpp Source/gui/Views.cpp)
+        Source/engine/Diagnosis.cpp Source/engine/Profiles.cpp Source/engine/ProbeRegistry.cpp Source/gui/Views.cpp Source/gui/RackViews.cpp Source/rack/Rack.cpp)
     target_include_directories(AZSnapshot PRIVATE Source)
-    target_compile_definitions(AZSnapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 AZ_SNAPSHOT=1)
+    target_compile_definitions(AZSnapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 AZ_SNAPSHOT=1 JUCE_PLUGINHOST_VST3=1)
     target_link_libraries(AZSnapshot PRIVATE juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
+endif()
+
+# ---------------------------------------------------------------------------
+# Rack sinovlari uchun test plaginlari (faqat ishlab chiquvchi uchun)
+# ---------------------------------------------------------------------------
+option(AZ_BUILD_TEST_PLUGINS "Rack sinov plaginlarini qurish" OFF)
+if(AZ_BUILD_TEST_PLUGINS)
+    foreach(kind Comp EQ)
+        string(TOUPPER ${kind} KIND)
+        if(kind STREQUAL "Comp")
+            set(CODE Atcp)
+        else()
+            set(CODE Ateq)
+        endif()
+        juce_add_plugin(AZTest${kind}
+            COMPANY_NAME "AZ Test Labs"
+            PLUGIN_MANUFACTURER_CODE Aztl
+            PLUGIN_CODE ${CODE}
+            PRODUCT_NAME "AZTest ${kind}"
+            FORMATS VST3
+            VST3_CATEGORIES Fx)
+        target_sources(AZTest${kind} PRIVATE tests/testplugins/TestPlugins.cpp)
+        target_compile_definitions(AZTest${kind} PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
+                                   JUCE_DISPLAY_SPLASH_SCREEN=0 AZTEST_${KIND}=1)
+        target_link_libraries(AZTest${kind} PRIVATE juce::juce_audio_utils juce::juce_dsp PUBLIC juce::juce_recommended_config_flags)
+    endforeach()
 endif()

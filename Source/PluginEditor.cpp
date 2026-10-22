@@ -5,19 +5,20 @@ using namespace az::ui;
 namespace
 {
     constexpr int kContentX = 76, kContentY = 84, kContentW = 1180, kContentH = 796;
-    const char* kTabNames[] = { "Tahlil", "Zanjir", "Hisobot", "Sozlamalar" };
+    const char* kTabNames[] = { "Tahlil", "Rack \xc2\xb7 Zanjir", "Hisobot", "Sozlamalar" };
+    const int kTabX[] = { 346, 440, 568, 662 }, kTabW[] = { 90, 124, 90, 108 };
 }
 
 //==============================================================================
 AZRootView::AZRootView (AZMonitoringProcessor& p)
-    : proc (p), reportPage (p), settingsPage (p), probePage (p)
+    : proc (p), chainPage (p), reportPage (p), settingsPage (p), probePage (p), browser (p)
 {
     setSize (W, H);
 
     for (int i = 0; i < 4; ++i)
     {
         auto& t = tabs[i];
-        t.setButtonText (kTabNames[i]);
+        t.setButtonText (juce::String::fromUTF8 (kTabNames[i]));
         t.setRadioGroupId (1001);
         t.setClickingTogglesState (true);
         t.getProperties().set ("noOutline", true);
@@ -44,6 +45,10 @@ AZRootView::AZRootView (AZMonitoringProcessor& p)
     for (auto* c : std::initializer_list<juce::Component*> { &analysisPage, &chainPage, &reportPage, &settingsPage, &probePage })
         addChildComponent (c);
 
+    addChildComponent (browser);
+    chainPage.onAddPlugin = [this] (int idx) { browser.open (idx, data); };
+    browser.onAdded = [this] (juce::uint32 id) { chainPage.selectRackSlot (id); timerCallback(); };
+
     updateModeLayout();
     timerCallback();
     startTimerHz (8);
@@ -68,6 +73,7 @@ void AZRootView::updateModeLayout()
     for (auto& t : tabs) t.setVisible (! probe);
     profileBox.setVisible (! probe);
     probePage.setVisible (probe);
+    if (probe) browser.setVisible (false);
     if (probe)
     {
         analysisPage.setVisible (false);
@@ -105,6 +111,7 @@ void AZRootView::timerCallback()
         if (analysisPage.isVisible()) analysisPage.setData (data);
         if (chainPage.isVisible())    chainPage.setData (data);
         if (reportPage.isVisible())   reportPage.setData (data);
+        if (browser.isVisible())      browser.refresh (data);
     }
     repaint (0, 0, W, kContentY);
 }
@@ -154,9 +161,9 @@ void AZRootView::paint (juce::Graphics& g)
     else
     {
         g.setColour (strip);
-        g.fillRoundedRectangle (juce::Rectangle<float> (342, 24, 4 * 96 + 8, 42), 9.0f);
+        g.fillRoundedRectangle (juce::Rectangle<float> (342, 24, 432, 42), 9.0f);
         g.setColour (border);
-        g.drawRoundedRectangle (juce::Rectangle<float> (342.5f, 24.5f, 4 * 96 + 7, 41), 9.0f, 1.0f);
+        g.drawRoundedRectangle (juce::Rectangle<float> (342.5f, 24.5f, 431, 41), 9.0f, 1.0f);
     }
 
     // Holat satri
@@ -170,7 +177,7 @@ void AZRootView::paint (juce::Graphics& g)
 void AZRootView::resized()
 {
     for (int i = 0; i < 4; ++i)
-        tabs[i].setBounds (346 + i * 96, 28, 92, 34);
+        tabs[i].setBounds (kTabX[i], 28, kTabW[i], 34);
     profileBox.setBounds (kContentX + kContentW - 250 - 140, 26, 250, 38);
     resetButton.setBounds (kContentX + kContentW - 130, 26, 130, 38);
 
@@ -180,6 +187,7 @@ void AZRootView::resized()
     reportPage.setBounds (content);
     settingsPage.setBounds (content);
     probePage.setBounds (content);
+    browser.setBounds (53, 0, W - 53, H);
 }
 
 //==============================================================================

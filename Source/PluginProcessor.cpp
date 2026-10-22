@@ -69,18 +69,27 @@ AZMonitoringProcessor::AZMonitoringProcessor()
     az::ProbeRegistry::instance().add (point);
 
     analysisThread->thread.addTimeSliceClient (this);
+    startTimer (400);
 }
 
 AZMonitoringProcessor::~AZMonitoringProcessor()
 {
+    stopTimer();
+    rack.closeAllEditors();
     analysisThread->thread.removeTimeSliceClient (this);
     az::ProbeRegistry::instance().remove (point.get());
 }
 
 //==============================================================================
-void AZMonitoringProcessor::prepareToPlay (double sampleRate, int)
+void AZMonitoringProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    analyzer.prepare (sampleRate, juce::jmax (1, getTotalNumInputChannels()));
+    const int ch = juce::jmax (1, getTotalNumInputChannels());
+    maxBlock = juce::jmax (32, samplesPerBlock);
+    work.setSize (2, maxBlock);
+    analyzer.prepare (sampleRate, ch);
+    inputAnalyzer.prepare (sampleRate, ch);
+    rack.prepare (sampleRate, maxBlock, ch);
+    setLatencySamples (isProbe() ? 0 : rack.computeTotalLatency());
 }
 
 bool AZMonitoringProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -95,10 +104,11 @@ template <typename Sample>
 void AZMonitoringProcessor::processAudio (juce::AudioBuffer<Sample>& buffer)
 {
     juce::ScopedNoDenormals noDenormals;
+    const int numIn = getTotalNumInputChannels(), numOut = getTotalNumOutputChannels();
+    const int n = buffer.getNumSamples();
 
-    // Kirish = chiqish (signal o'zgartirilmaydi). Ortiqcha chiqish kanallarini tozalaymiz.
-    for (int c = getTotalNumInputChannels(); c < getTotalNumOutputChannels(); ++c)
-        buffer.clear (c, 0, buffer.getNumSamples());
+    for (int c = numIn; c < numOut; ++c)
+        buffer.clear (c, 0, n);
 
     double t = 0;
     bool timeValid = false, playing = true, playheadKnown = false;
@@ -109,12 +119,42 @@ void AZMonitoringProcessor::processAudio (juce::AudioBuffer<Sample>& buffer)
             playing = pos->getIsPlaying();
             if (auto s = pos->getTimeInSeconds()) { t = *s; timeValid = true; }
         }
+    const bool analyse = ! (playOnlyParam != nullptr && playOnlyParam->get() && playheadKnown && ! playing);
 
-    if (playOnlyParam != nullptr && playOnlyParam->get() && playheadKnown && ! playing)
+    // Rack bo'sh yoki Probe rejimi: signal o'zgarmaydi
+    if (isProbe() || rack.size() == 0 || numIn == 0 || work.getNumSamples() == 0)
+    {
+        if (analyse)
+            analyzer.pushAudio (buffer.getArrayOfReadPointers(), numIn, n, t, timeValid);
         return;
+    }
 
-    analyzer.pushAudio (buffer.getArrayOfReadPointers(), getTotalNumInputChannels(),
-                        buffer.getNumSamples(), t, timeValid);
+    // Rack: ichki ishlov har doim stereo float'da
+    const double sr = getSampleRate() > 0 ? getSampleRate() : 48000.0;
+    for (int pos = 0; pos < n; pos += maxBlock)
+    {
+        const int len = juce::jmin (maxBlock, n - pos);
+        const double tt = t + pos / sr;
+        for (int c = 0; c < 2; ++c)
+        {
+            const auto* src = buffer.getReadPointer (juce::jmin (c, numIn - 1), pos);
+            auto* dst = work.getWritePointer (c);
+            for (int i = 0; i < len; ++i) dst[i] = (float) src[i];
+        }
+        if (analyse)
+            inputAnalyzer.pushAudio (work.getArrayOfReadPointers(), numIn, len, tt, timeValid);
+
+        rack.process (work, numIn, len, tt, timeValid, analyse);
+
+        for (int c = 0; c < numOut; ++c)
+        {
+            const auto* src = work.getReadPointer (juce::jmin (c, 1));
+            auto* dst = buffer.getWritePointer (c, pos);
+            for (int i = 0; i < len; ++i) dst[i] = (Sample) src[i];
+        }
+        if (analyse)
+            analyzer.pushAudio (work.getArrayOfReadPointers(), numIn, len, tt, timeValid);
+    }
 }
 
 void AZMonitoringProcessor::processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&)  { processAudio (b); }
@@ -124,9 +164,19 @@ void AZMonitoringProcessor::processBlock (juce::AudioBuffer<double>& b, juce::Mi
 int AZMonitoringProcessor::useTimeSlice()
 {
     if (point->resetRequested.exchange (false))
+    {
         analyzer.requestReset();
+        inputAnalyzer.requestReset();
+        rack.resetAnalyzers();
+    }
 
     analyzer.runBackground();
+    if (rack.size() > 0)
+    {
+        inputAnalyzer.runBackground();
+        for (auto& a : rack.getAnalyzers())
+            a->runBackground();
+    }
 
     point->mode = isProbe() ? 1 : 0;
     point->slotIndex = getSlotIndex();
@@ -232,7 +282,35 @@ az::Report AZMonitoringProcessor::buildReport (az::Features& finalOut, int& prob
         cp.f = p.features;
         pts.push_back (std::move (cp));
     }
-    if (! pts.empty())
+    const auto slots = rack.getSlots();
+    bool anyActive = false;
+    for (auto& sl : slots) anyActive = anyActive || (sl->plugin != nullptr && ! sl->bypass.load());
+
+    if (anyActive && ! isProbe())
+    {
+        az::ChainPoint in;
+        in.slotIndex = 12;
+        in.slot = "AZ IN";
+        in.name = pts.empty() ? juce::String ("Kirish") : juce::String ("DAW insertlari");
+        in.f = inputAnalyzer.getSnapshot();
+        pts.push_back (std::move (in));
+        for (int k = 0; k < (int) slots.size(); ++k)
+        {
+            const auto& sl = slots[(size_t) k];
+            if (sl->plugin == nullptr || sl->bypass.load()) continue;
+            az::ChainPoint cp;
+            cp.slotIndex = 13 + k;
+            cp.slot = "R" + juce::String (k + 1);
+            cp.name = sl->displayName();
+            cp.f = sl->analyzer->getSnapshot();
+            cp.rackSlot = k;
+            const auto gs = sl->getGainStats();
+            cp.grRange = gs.grRange();
+            cp.grSlope = gs.slope();
+            pts.push_back (std::move (cp));
+        }
+    }
+    else if (! pts.empty())
     {
         az::ChainPoint out;
         out.slotIndex = 11;
@@ -247,10 +325,66 @@ az::Report AZMonitoringProcessor::buildReport (az::Features& finalOut, int& prob
 }
 
 //==============================================================================
+juce::String AZMonitoringProcessor::addPlugin (const juce::PluginDescription& d, int index)
+{
+    juce::String err;
+    auto inst = rack.createInstance (catalog->getFormats(), d, err);
+    if (inst == nullptr)
+        return err.isNotEmpty() ? err : juce::String ("Plaginni ochib bo'lmadi");
+    rack.insert (std::move (inst), d, index);
+    updateLatency();
+    resetAnalysis();
+    return {};
+}
+
+void AZMonitoringProcessor::updateLatency()
+{
+    const int lat = isProbe() ? 0 : rack.computeTotalLatency();
+    if (lat != getLatencySamples())
+        setLatencySamples (lat);
+}
+
+void AZMonitoringProcessor::timerCallback()
+{
+    juce::ValueTree pending;
+    {
+        const juce::ScopedLock sl (pendingLock);
+        std::swap (pending, pendingRack);
+    }
+    if (pending.isValid())
+    {
+        rack.restoreState (pending, catalog->getFormats());
+        resetAnalysis();
+    }
+    updateLatency();
+}
+
+bool AZMonitoringProcessor::saveRackPreset (const juce::File& f) const
+{
+    if (auto xml = rack.saveState().createXml())
+        return xml->writeTo (f);
+    return false;
+}
+
+juce::String AZMonitoringProcessor::loadRackPreset (const juce::File& f)
+{
+    auto xml = juce::XmlDocument::parse (f);
+    if (xml == nullptr || ! xml->hasTagName ("RACK"))
+        return "Fayl AZ Rack preseti emas";
+    rack.restoreState (juce::ValueTree::fromXml (*xml), catalog->getFormats());
+    updateLatency();
+    resetAnalysis();
+    return rack.getRestoreErrors();
+}
+
+//==============================================================================
 void AZMonitoringProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     apvts.state.setProperty ("label", getPluginLabel(), nullptr);
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.removeChild (state.getChildWithName ("RACK"), nullptr);
+    state.appendChild (rack.saveState(), nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
 }
 
@@ -259,9 +393,28 @@ void AZMonitoringProcessor::setStateInformation (const void* data, int size)
     if (auto xml = getXmlFromBinary (data, size))
         if (xml->hasTagName (apvts.state.getType()))
         {
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-            const juce::SpinLock::ScopedLockType sl (textLock);
-            pluginLabel = apvts.state.getProperty ("label").toString();
+            auto state = juce::ValueTree::fromXml (*xml);
+            auto rackTree = state.getChildWithName ("RACK").createCopy();
+            state.removeChild (state.getChildWithName ("RACK"), nullptr);
+            apvts.replaceState (state);
+            {
+                const juce::SpinLock::ScopedLockType sl (textLock);
+                pluginLabel = apvts.state.getProperty ("label").toString();
+            }
+            if (rackTree.isValid())
+            {
+                if (juce::MessageManager::getInstanceWithoutCreating() != nullptr
+                     && juce::MessageManager::getInstance()->isThisTheMessageThread())
+                {
+                    rack.restoreState (rackTree, catalog->getFormats());
+                    updateLatency();
+                }
+                else
+                {
+                    const juce::ScopedLock sl2 (pendingLock);
+                    pendingRack = rackTree;   // xabar oqimida taymer tiklaydi
+                }
+            }
         }
 }
 

@@ -168,20 +168,38 @@ Report diagnose (const Features& f, const Profile& p, const DeliveryStandard& st
         add (c);
     }
 
-    // 4. Dinamika (crest factor)
+    // 4. Dinamika: 100 ms darajalar tarqalishi (siqish chuqurligi)
     {
         Check c;
-        c.title = master ? "Dinamika (PLR / crest)" : "Dinamika (crest factor)";
+        c.title = "Dinamika (darajalar tarqalishi)";
+        c.measured = juce::String (f.levelSpread, 1) + " dB";
+        const float lo = master ? 3.0f : 4.0f, hi = master ? 8.0f : 10.0f;
+        c.target = juce::String (juce::roundToInt (lo)) + "-" + juce::String (juce::roundToInt (hi)) + " dB";
+        const float out = f.levelSpread < lo ? lo - f.levelSpread : (f.levelSpread > hi ? f.levelSpread - hi : 0.0f);
+        c.status = out <= 0 ? Status::Ideal : (out <= 1.5f ? Status::Warn : Status::Problem);
+        if (f.levelSpread < lo)
+            c.advice = "Haddan ortiq siqilgan: so'zlar orasidagi tabiiy balandlik farqi deyarli yo'q, vokal \"yassi\". Kompressor(lar)da umumiy gain reduction'ni "
+                       "3-5 dB gacha kamaytiring, ketma-ket ikki kompressor bo'lsa ikkinchisini yumshating (2-3:1).";
+        else if (f.levelSpread > hi)
+            c.advice = "Vokal mixda \"suzib\" yuradi: baland va past so'zlar farqi katta. Kompressor qo'shing (3:1, 3-6 dB GR) yoki clip gain/avtomatizatsiya bilan tekislang.";
+        add (c);
+    }
+
+    // 4b. Crest factor (peak va o'rtacha daraja farqi)
+    {
+        Check c;
+        c.title = master ? "Crest factor (PLR)" : "Crest factor (peak)";
         c.measured = juce::String (f.crest, 1) + " dB";
         const float lo = master ? 7.0f : p.crestMin, hi = master ? 13.0f : p.crestMax;
         c.target = juce::String (juce::roundToInt (lo)) + "-" + juce::String (juce::roundToInt (hi)) + " dB";
         const float out = f.crest < lo ? lo - f.crest : (f.crest > hi ? f.crest - hi : 0.0f);
         c.status = out <= 0 ? Status::Ideal : (out <= 2.0f ? Status::Warn : Status::Problem);
         if (f.crest < lo)
-            c.advice = "Haddan ortiq siqilgan: ovoz \"yassi\", undosh hujumlari yo'qolgan. Kompressor(lar)da umumiy gain reduction'ni 3-5 dB gacha kamaytiring, "
-                       "attack'ni 10-30 ms ga sekinlashtiring yoki siqishni 2 bosqichga bo'ling (masalan 2:1 + 4:1).";
+            c.advice = "Peaklar haddan ortiq kesilgan (limiter/clipper): undosh hujumlari yo'qolgan. Limiter yoki tez attack'li kompressorda gain reduction'ni kamaytiring, attack'ni 10-30 ms qiling.";
+        else if (f.crest > hi && f.levelSpread <= 10.0f)
+            c.advice = "Darajalar tekis, lekin alohida peaklar keskin (undoshlar, \"P/T\" zarbalari). Tez attack'li (1176 tipidagi) kompressor yoki yumshoq clipper bilan 2-3 dB peak'ni kesing.";
         else if (f.crest > hi)
-            c.advice = "Vokal mixda \"suzib\" yuradi: baland va past joylar farqi katta. Kompressor qo'shing (3:1, 3-6 dB GR) yoki clip gain/avtomatizatsiya bilan tekislang.";
+            c.advice = "Peaklar keskin. Kompressor bilan dinamikani tekislang (yuqoridagi tavsiyaga qarang).";
         add (c);
     }
 
@@ -307,6 +325,7 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         StageResult st;
         st.slot = pts[i - 1].slot + juce::String::fromUTF8 (" → ") + pts[i].slot;
         st.name = pts[i].name;
+        st.rackSlot = pts[i].rackSlot;
 
         if (! a.hasEnoughData() || ! b.hasEnoughData() || ! a.spectrumValid || ! b.spectrumValid)
         {
@@ -319,6 +338,7 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         st.valid = true;
         st.gainChange  = b.integrated - a.integrated;
         st.crestBefore = a.crest;  st.crestAfter = b.crest;
+        st.spreadBefore = a.levelSpread; st.spreadAfter = b.levelSpread;
         st.sibBefore   = a.sibilanceP97; st.sibAfter = b.sibilanceP97;
         st.snrChange   = (b.rmsActive - b.noiseFloor) - (a.rmsActive - a.noiseFloor);
         st.levelIn     = a.rmsActive;
@@ -368,7 +388,11 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         const float maxEq = juce::jmax (maxBoost, -maxCut);
         // Kompressor ham uzoq muddatli spektrni biroz o'zgartiradi (pauzalardagi shovqin ko'tariladi) —
         // shuning uchun dinamika bosqichida EQ deb hisoblash chegarasi yuqoriroq
-        const bool isDyn = crestD <= -1.0f;
+        const float spreadD = b.levelSpread - a.levelSpread;   // manfiy = darajalar tekislandi (siqildi)
+        const bool hasGr = pts[i].grRange >= 0.0f;
+        st.grRange = pts[i].grRange;
+        st.effRatio = pts[i].grSlope > -0.95f ? 1.0f / (1.0f + pts[i].grSlope) : 20.0f;
+        const bool isDyn = hasGr ? (pts[i].grRange >= 2.0f && pts[i].grSlope < -0.08f) : (crestD <= -1.0f || spreadD <= -1.5f);
         const float eqThreshold = isDyn ? 3.0f : 1.5f;
         float maxEqMid = 0, midBoost = 0, midCut = 0, midBoostHz = 0, midCutHz = 0;
         for (int k = bandForFreq (120.0f); k <= bandForFreq (12000.0f); ++k)
@@ -394,7 +418,7 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         if (isDyn) roles.add ("Kompressor / limiter");
         if (sibD <= -1.5f && eqForRole < 4.0f) roles.add ("De-esser");
         if (eqForRole >= eqThreshold) roles.add ("EQ / tembr");
-        if (st.snrChange < -6.0f && crestD > -1.0f) roles.add ("Effekt (reverb/shovqin)");
+        if (st.snrChange < -6.0f && ! isDyn) roles.add ("Effekt (reverb/shovqin)");
         if (roles.isEmpty() && std::abs (st.gainChange) >= 0.5f) roles.add ("Gain");
         const bool noEffect = roles.isEmpty() && std::abs (st.gainChange) < 0.3f && std::abs (crestD) < 0.3f && maxEq < 0.6f;
         st.role = noEffect ? juce::String ("Ta'siri sezilmadi")
@@ -404,6 +428,10 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         juce::StringArray fx;
         fx.add ("Daraja " + fmtDb (st.gainChange, 1, " LU"));
         fx.add ("Crest " + juce::String (a.crest, 1) + juce::String::fromUTF8 (" → ") + juce::String (b.crest, 1) + " dB");
+        if (hasGr && isDyn)
+            fx.add ("GR " + juce::String (pts[i].grRange, 1) + " dB, ratio ~" + juce::String (st.effRatio, 1) + ":1");
+        if (std::abs (spreadD) >= 1.0f)
+            fx.add ("Tarqalish " + juce::String (a.levelSpread, 1) + juce::String::fromUTF8 (" → ") + juce::String (b.levelSpread, 1) + " dB");
         if (isDyn)
         {
             if (midBoost >= 1.0f) fx.add (fmtHz (midBoostHz) + " " + fmtDb (midBoost));
@@ -420,16 +448,22 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         // Qoidalar
         int problems = 0, warns = 0;
         juce::StringArray adv;
-        if (crestD <= -7.0f)
+        if (hasGr && isDyn && pts[i].grRange >= 8.0f)
+        {
+            if (pts[i].grRange >= 12.0f) ++problems; else ++warns;
+            adv.add ("Gain reduction " + juce::String (pts[i].grRange, 1) + " dB oralig'ida o'zgaradi, samarali ratio ~" + juce::String (st.effRatio, 1)
+                     + ":1. Vokal uchun bitta kompressorda 3-6 dB GR va 2-4:1 yetarli - threshold'ni ko'taring, ratio'ni kamaytiring.");
+        }
+        else if (crestD <= -7.0f || spreadD <= -7.0f)
         {
             ++problems;
-            adv.add ("Haddan ortiq siqish: crest " + juce::String (-crestD, 1) + " dB kamaydi. Gain reduction'ni 3-5 dB ga tushiring, "
+            adv.add ("Haddan ortiq siqish: crest " + juce::String (-crestD, 1) + " dB, darajalar tarqalishi " + juce::String (-spreadD, 1) + " dB kamaydi. Gain reduction'ni 3-5 dB ga tushiring, "
                      "attack'ni 10-20 ms, release'ni 80-150 ms qiling yoki ratio'ni 2.5-3:1 ga kamaytiring.");
         }
-        else if (crestD <= -5.0f)
+        else if (crestD <= -5.0f || spreadD <= -4.5f)
         {
             ++warns;
-            adv.add ("Siqish kuchli (crest -" + juce::String (-crestD, 1) + " dB). Agar oldinda boshqa kompressor bo'lsa, bu yerda 1-2 dB kamroq siqing.");
+            adv.add ("Siqish kuchli (crest " + juce::String (crestD, 1) + " dB, tarqalish " + juce::String (spreadD, 1) + " dB). Agar oldinda boshqa kompressor bo'lsa, bu yerda 1-2 dB kamroq siqing.");
         }
         if (isDyn && lfRise >= 4.0f)
         {
@@ -540,8 +574,25 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
             rep.chainHint = "Zanjirda de-esser aniqlanmadi, yakuniy sibilyant etalondan " + over + " dB baland - kompressordan keyin de-esser qo'ying.";
     }
 
-    // Umumiy siqish: yakuniy crest etalondan past bo'lsa — eng ko'p siqqan bosqich asosiy sababchi
     const auto& finalF = pts.back().f;
+
+    // Ketma-ket ortiqcha siqish: yakuniy signal juda tekis (100 ms darajalar tarqalishi < 4 dB)
+    if (finalF.hasEnoughData() && finalF.levelSpread > 0 && finalF.levelSpread < 4.0f)
+    {
+        for (auto& st : rep.stages)
+        {
+            if (! st.valid || ! st.role.contains ("Kompressor") || st.spreadBefore >= 6.0f) continue;
+            st.advice = "Signal bu kompressorga allaqachon tekis kelgan (tarqalish " + juce::String (st.spreadBefore, 1) + " dB), u esa yana "
+                        + juce::String (st.spreadBefore - st.spreadAfter, 1) + " dB tekislab, vokalni \"yassi\" qilmoqda (yakuniy tarqalish "
+                        + juce::String (finalF.levelSpread, 1) + " dB). Ratio'ni 2-4:1 ga, gain reduction'ni 2-3 dB ga tushiring yoki bu kompressorni olib tashlang.\n" + st.advice;
+            st.advice = st.advice.trimEnd();
+            const bool severe = finalF.levelSpread < 3.0f;
+            if (severe) { st.status = Status::Problem; st.score = juce::jmin (st.score, 40); }
+            else if (st.status == Status::Ideal) { st.status = Status::Warn; st.score = juce::jmin (st.score, 70); }
+        }
+    }
+
+    // Umumiy siqish: yakuniy crest etalondan past bo'lsa — eng ko'p siqqan bosqich asosiy sababchi
     if (finalF.hasEnoughData() && finalF.crest < p.crestMin - 1.0f)
     {
         int worst = -1; float worstD = 0;

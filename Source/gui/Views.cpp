@@ -206,7 +206,7 @@ void SummaryPanel::paint (juce::Graphics& g)
         { "True Peak (max)", az::fmtDb (f.truePeakMax, 1, " dBTP"), juce::String ("BS.1770 oversampling"), colourFor (*data, "True Peak") },
         { "Loudness Range", f.lra > 0 ? juce::String (f.lra, 1) + " LU" : juce::String ("--"), "EBU Tech 3342", colourFor (*data, "Loudness Range") },
         { "Crest factor", f.crest > 0 ? juce::String (f.crest, 1) + " dB" : juce::String ("--"),
-          data->profile ? juce::String (data->profile->crestMin, 0) + "-" + juce::String (data->profile->crestMax, 0) + " dB" : juce::String(), colourFor (*data, "Dinamika") },
+          data->profile ? juce::String (data->profile->crestMin, 0) + "-" + juce::String (data->profile->crestMax, 0) + " dB" : juce::String(), colourFor (*data, "Crest") },
         { "Shovqin foni", f.noiseFloor > kNoValue + 1 ? juce::String (juce::roundToInt (f.noiseFloor)) + " dBFS" : juce::String ("--"), "pauzalarda", colourFor (*data, "Shovqin") },
     };
     const float cw = (b.getWidth() - 48) / 2.0f;

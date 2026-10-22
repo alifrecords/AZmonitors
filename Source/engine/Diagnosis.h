@@ -22,8 +22,10 @@ struct StageResult
     Status status = Status::NoData;
     int score = 0;
     bool valid = false;
+    int rackSlot = -1;                  // AZ Rack ichidagi slot (-1 = DAW inserti, probe orqali)
 
-    float gainChange = 0, crestBefore = 0, crestAfter = 0;
+    float gainChange = 0, crestBefore = 0, crestAfter = 0, spreadBefore = 0, spreadAfter = 0;
+    float grRange = -1, effRatio = 1;   // rack ichida o'lchangan gain reduction oralig'i va samarali ratio (-1 = o'lchanmagan)
     float sibBefore = 0, sibAfter = 0, snrChange = 0;
     float levelIn = kNoValue, tpOut = kNoValue;
     std::array<float, kNumBands> bandDelta {};
@@ -35,6 +37,8 @@ struct ChainPoint
     int slotIndex = 0;                  // 0 = IN, 1..10 = A..J, 11 = OUT (monitor)
     juce::String slot, name;
     Features f;
+    int rackSlot = -1;
+    float grRange = -1, grSlope = 0;    // faqat rack slotlari uchun (kirish/chiqish to'g'ridan-to'g'ri)
 };
 
 struct Report

@@ -3,6 +3,7 @@
 #include "dsp/Analyzer.h"
 #include "engine/Diagnosis.h"
 #include "engine/ProbeRegistry.h"
+#include "rack/Rack.h"
 
 //==============================================================================
 // AZ Monitoring — Azimxodjayev Music
@@ -12,7 +13,8 @@
 //   Probe   — har bir plagindan KEYIN: o'sha nuqtadagi signalni o'lchaydi
 // Audio signal hech qachon o'zgartirilmaydi (bit-transparent, 0 latency).
 class AZMonitoringProcessor final : public juce::AudioProcessor,
-                                    private juce::TimeSliceClient
+                                    private juce::TimeSliceClient,
+                                    private juce::Timer
 {
 public:
     AZMonitoringProcessor();
@@ -20,7 +22,7 @@ public:
 
     //==========================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override { rack.release(); }
     bool isBusesLayoutSupported (const BusesLayout&) const override;
 
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
@@ -34,7 +36,7 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    double getTailLengthSeconds() const override { return rack.size() > 0 ? 2.0 : 0.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -73,8 +75,22 @@ public:
 
     static juce::StringArray profileNames();
 
+    //==========================================================================
+    // AZ Rack — plaginlarni AZ Monitoring ichiga yuklash
+    az::Rack rack;
+    az::Analyzer inputAnalyzer;                         // rack kirishi
+    az::PluginCatalog& getCatalog() { return *catalog; }
+
+    /** Plaginni yaratib, rack'ka qo'shadi (GUI oqimida). Xato bo'lsa matn qaytaradi. */
+    juce::String addPlugin (const juce::PluginDescription&, int index);
+    void updateLatency();
+
+    bool saveRackPreset (const juce::File&) const;
+    juce::String loadRackPreset (const juce::File&);
+
 private:
     int useTimeSlice() override;
+    void timerCallback() override;
 
     template <typename Sample>
     void processAudio (juce::AudioBuffer<Sample>&);
@@ -102,6 +118,12 @@ private:
 
     mutable juce::SpinLock textLock;
     juce::String trackName, pluginLabel;
+
+    juce::SharedResourcePointer<az::PluginCatalog> catalog;
+    juce::AudioBuffer<float> work;
+    int maxBlock = 512;
+    juce::CriticalSection pendingLock;
+    juce::ValueTree pendingRack;
 
     az::Profile customProfile;
     bool customProfileLoaded = false;

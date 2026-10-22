@@ -433,6 +433,13 @@ void Analyzer::computeSnapshot()
     if (f.peakP995 > kNoValue && f.rmsActive > kNoValue)
         f.crest = f.peakP995 - f.rmsActive;
     f.noiseFloor = percentile (floorHist, kFloorMin, kFloorStep, 0.03);
+    if (f.rmsActive > kNoValue + 1)
+    {
+        const int from = juce::jlimit (0, kFloorBins - 1, (int) ((f.rmsActive - 20.0f - kFloorMin) / kFloorStep));
+        const float p10 = percentile (floorHist, kFloorMin, kFloorStep, 0.10, from);
+        const float p90 = percentile (floorHist, kFloorMin, kFloorStep, 0.90, from);
+        if (p10 > kNoValue && p90 > kNoValue) f.levelSpread = p90 - p10;
+    }
     f.sibilanceP97 = percentile (sibHist, kSibMin, kSibStep, 0.97);
     f.sibilanceMedian = percentile (sibHist, kSibMin, kSibStep, 0.50);
 

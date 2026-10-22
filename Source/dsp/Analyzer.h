@@ -48,6 +48,7 @@ struct Features
     float peakP995   = kNoValue;    // dBTP, 100 ms peaklarning 99.5-persentili
     float crest      = 0;           // dB = peakP995 - rmsActive
     float noiseFloor = kNoValue;    // dBFS, 100 ms RMS ning 3-persentili
+    float levelSpread = 0;          // dB, faol qismdagi 100 ms RMS darajalarining P90-P10 farqi (siqish ko'rsatkichi)
 
     // Sibilyant indeksi: (5-9 kHz) / (1-4 kHz) quvvat nisbati, faol freymlar bo'yicha
     float sibilanceP97    = kNoValue;
