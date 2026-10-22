@@ -94,7 +94,7 @@ target_sources(AZPluginScanner PRIVATE Source/scanner/ScannerMain.cpp)
 target_compile_definitions(AZPluginScanner PRIVATE
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=1 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_LV2=0)
-target_link_libraries(AZPluginScanner PRIVATE juce::juce_audio_processors juce::juce_recommended_config_flags)
+target_link_libraries(AZPluginScanner PRIVATE juce::juce_audio_utils juce::juce_recommended_config_flags)
 if(MSVC)
     # Konsol oynasi ochilmasin
     set_target_properties(AZPluginScanner PROPERTIES WIN32_EXECUTABLE TRUE)
