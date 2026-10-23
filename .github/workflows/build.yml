@@ -1,0 +1,46 @@
+name: Build Monitor Match
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build build --config Release --target MonitorMatch_VST3 MonitorMatch_Standalone --parallel
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse "build/MonitorMatch_artefacts/Release/VST3/Monitor Match.vst3" out/
+          Copy-Item "build/MonitorMatch_artefacts/Release/Standalone/Monitor Match.exe" out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MonitorMatch-Windows-VST3
+          path: out
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G Xcode
+      - name: Build
+        run: cmake --build build --config Release --target MonitorMatch_VST3 MonitorMatch_AU MonitorMatch_Standalone -- -quiet
+      - name: Sign (ad-hoc) and package
+        run: |
+          mkdir -p out
+          cp -R "build/MonitorMatch_artefacts/Release/VST3/Monitor Match.vst3" out/
+          cp -R "build/MonitorMatch_artefacts/Release/AU/Monitor Match.component" out/
+          cp -R "build/MonitorMatch_artefacts/Release/Standalone/Monitor Match.app" out/
+          for b in out/*; do codesign --force --deep --sign - "$b"; done
+          cd out && zip -qry ../MonitorMatch-macOS.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MonitorMatch-macOS-VST3-AU
+          path: MonitorMatch-macOS.zip
