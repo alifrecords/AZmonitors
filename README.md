@@ -41,7 +41,7 @@ O'lchov loyiha bilan birga saqlanadi.
 ### Tayyor fayllarni olish (kompilyatsiya kerak emas)
 1. https://github.com/alifrecords/AZmonitors/actions sahifasini oching.
 2. **monitor-match** branch'idagi eng oxirgi yashil ✓ "Build Monitor Match" ishga tushirishini bosing.
-3. Pastdagi **Artifacts** bo'limidan `MonitorMatch-Windows-VST3` yoki `MonitorMatch-macOS-VST3-AU` ni yuklab oling.
+3. Pastdagi **Artifacts** bo'limidan `MonitorMatch-Windows` yoki `MonitorMatch-macOS` ni yuklab oling.
 
 Qayta yig'ish kerak bo'lsa: Actions → "Build Monitor Match" → **Run workflow** → branch: `monitor-match`.
 
