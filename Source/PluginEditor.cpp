@@ -266,7 +266,7 @@ MainView::MainView (MonitorMatchProcessor& p) : proc (p), apvts (p.apvts)
     for (size_t i = 0; i < tP.size(); ++i)
     {
         auto* c = targetCards.add (new CardButton (tP[i].brand, tP[i].model, tP[i].note, col::accent));
-        c->brandColour = brandCols[juce::jmin<size_t> (i, 4)];
+        c->brandColour = brandCols[std::min (i, (size_t) 4)];
         addAndMakeVisible (c);
         c->onClick = [this, i]
         {
