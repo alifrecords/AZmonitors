@@ -49,6 +49,7 @@ public:
 
     std::function<void (int insertIndex)> onAddPlugin;
     void selectRackSlot (juce::uint32 id) { selectedId = id; selectedStage = -1; }
+    void setView (int v) { view = juce::jlimit (0, 2, v); viewButtons[view].setToggleState (true, juce::dontSendNotification); updateButtons(); }
 
 private:
     void rebuildRows();
@@ -71,6 +72,9 @@ private:
     juce::TextButton applyButton { "Tavsiyani qo'llash" }, editorButton { "Plagin oynasi" },
                      deltaButton { "Delta tinglash" }, bypassButton { "Bypass" },
                      addAfterButton { "+ Bundan keyin qo'shish" }, removeButton { "Rack'dan olib tashlash" };
+
+    juce::TextButton viewButtons[3], specModeButton;
+    int view = 0, specMode = 0;
 
     std::vector<ParamProposal> proposals, applied;
     juce::uint32 proposalsFor = 0;

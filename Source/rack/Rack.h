@@ -1,6 +1,8 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "dsp/Analyzer.h"
+#include "dsp/Transfer.h"
+#include <deque>
 #include "engine/Diagnosis.h"
 
 namespace az
@@ -58,29 +60,77 @@ private:
 struct GainStats
 {
     int n = 0;
-    double sx = 0, sy = 0, sxx = 0, sxy = 0;          // x = kirish dB, y = gain dB
-    std::array<juce::uint32, 400> hist {};             // gain: -60..+40 dB, 0.25 dB qadam
+    double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;  // x = kirish dB, y = gain dB
+    std::array<juce::uint32, 400> inHist {};           // kirish: -100..0 dB, 0.25 dB qadam
+
+    // Oxirgi 3 s (30 ta 100 ms blok) — real vaqtdagi gain reduction
+    static constexpr int kRecent = 30;
+    std::array<float, kRecent> recentIn {}, recentGain {};
+    int recentPos = 0, recentCount = 0;
 
     void add (float inDb, float gainDb) noexcept
     {
-        ++n; sx += inDb; sy += gainDb; sxx += (double) inDb * inDb; sxy += (double) inDb * gainDb;
-        hist[(size_t) juce::jlimit (0, 399, (int) ((gainDb + 60.0f) / 0.25f))] += 1;
+        ++n; sx += inDb; sy += gainDb; sxx += (double) inDb * inDb; syy += (double) gainDb * gainDb; sxy += (double) inDb * gainDb;
+        inHist[(size_t) juce::jlimit (0, 399, (int) ((inDb + 100.0f) / 0.25f))] += 1;
+        recentIn[(size_t) recentPos] = inDb; recentGain[(size_t) recentPos] = gainDb;
+        recentPos = (recentPos + 1) % kRecent; recentCount = juce::jmin (recentCount + 1, kRecent);
     }
     float slope() const noexcept
     {
         const double d = n * sxx - sx * sx;
         return n > 2 && d > 1.0e-9 ? (float) ((n * sxy - sx * sy) / d) : 0.0f;
     }
-    float percentile (double pct) const noexcept
+    /** Kirish darajasi va gain korrelyatsiyasi: kompressorda kuchli manfiy (-0.5 ... -1), EQ'da ~0 */
+    float correlation() const noexcept
     {
-        juce::uint64 total = 0; for (auto v : hist) total += v;
-        if (total == 0) return 0;
-        juce::uint64 acc = 0; const double target = pct * (double) (total - 1);
-        for (size_t i = 0; i < hist.size(); ++i) { acc += hist[i]; if ((double) acc > target) return -60.0f + ((float) i + 0.5f) * 0.25f; }
-        return 40.0f;
+        const double dx = n * sxx - sx * sx, dy = n * syy - sy * sy;
+        return n > 2 && dx > 1.0e-9 && dy > 1.0e-9 ? (float) ((n * sxy - sx * sy) / std::sqrt (dx * dy)) : 0.0f;
     }
-    /** Gain reduction oralig'i: eng yuqori va eng past gain farqi (P95 - P5) */
-    float grRange() const noexcept { return n >= 20 ? percentile (0.95) - percentile (0.05) : -1.0f; }
+    float inPercentile (double pct) const noexcept
+    {
+        juce::uint64 total = 0; for (auto v : inHist) total += v;
+        if (total == 0) return -100.0f;
+        juce::uint64 acc = 0; const double target = pct * (double) (total - 1);
+        for (size_t i = 0; i < inHist.size(); ++i) { acc += inHist[i]; if ((double) acc > target) return -100.0f + ((float) i + 0.5f) * 0.25f; }
+        return 0.0f;
+    }
+    /** Samarali gain reduction: darajaga bog'liq gain o'zgarishi (-slope x kirish oralig'i P10..P95).
+        EQ va oddiy gain uchun ~0, chunki ularda gain kirish darajasiga bog'liq emas. */
+    float grRange() const noexcept
+    {
+        if (n < 20) return -1.0f;
+        return juce::jmax (0.0f, -slope() * (inPercentile (0.95) - inPercentile (0.10)));
+    }
+    /** Oxirgi 3 soniyadagi gain reduction (knob burilganda tez yangilanadi) */
+    float grRecent() const noexcept
+    {
+        if (recentCount < 8) return -1.0f;
+        double rx = 0, ry = 0, rxx = 0, rxy = 0, mn = 1e9, mx = -1e9;
+        for (int i = 0; i < recentCount; ++i)
+        {
+            const double x = recentIn[(size_t) i], y = recentGain[(size_t) i];
+            rx += x; ry += y; rxx += x * x; rxy += x * y; mn = juce::jmin (mn, x); mx = juce::jmax (mx, x);
+        }
+        const double d = recentCount * rxx - rx * rx;
+        if (d < 1.0e-9) return 0.0f;
+        const double sl = (recentCount * rxy - rx * ry) / d;
+        return (float) juce::jmax (0.0, -sl * (mx - mn));
+    }
+};
+
+// Plagin parametri o'zgarishi va unga ovozning reaksiyasi
+struct ParamEvent
+{
+    juce::Time when;
+    juce::String param, from, to;
+    std::array<float, kNumBands> hBefore {};
+    std::array<bool, kNumBands> usableBefore {};
+    bool hasBefore = false;
+    float grBefore = -1;
+    double lastChangeMs = 0;
+    double playedSinceChange = 0;   // sekund
+    juce::int64 samplesAtChange = -1; // audio oqimi namunalar hisobi (o'zgarish paytida)
+    juce::String reaction;          // bo'sh = hali o'lchanmagan
 };
 
 // Rack slotidagi bitta plagin
@@ -102,6 +152,13 @@ struct RackSlot
     mutable juce::SpinLock statsLock;
     GainStats publishedStats;
     GainStats getGainStats() const { const juce::SpinLock::ScopedLockType sl (statsLock); return publishedStats; }
+
+    // Plaginning haqiqiy chastota javobi (H(f)), kogerentlik va spektrogramma
+    std::shared_ptr<TransferAnalyzer> transfer = std::make_shared<TransferAnalyzer>();
+
+    // Parametr o'zgarishlari jurnali (faqat GUI oqimi)
+    std::vector<float> lastParams;
+    std::deque<ParamEvent> events;
 
     juce::String displayName() const;
     juce::String formatLabel() const;
@@ -144,6 +201,10 @@ public:
     int computeTotalLatency() const;
     void resetAnalyzers();
 
+    /** GUI oqimi, ~10 Hz: parametr o'zgarishlarini aniqlaydi va reaksiyani o'lchaydi */
+    void pollParameters (bool playing, double dtSeconds);
+    std::vector<std::shared_ptr<TransferAnalyzer>> getTransfers() const;
+
     juce::ValueTree saveState() const;
     void restoreState (const juce::ValueTree&, juce::AudioPluginFormatManager&);
     juce::String getRestoreErrors() const { return restoreErrors; }
@@ -183,6 +244,7 @@ private:
     int maxBlock = 512, numCh = 2;
     int hopSize = 4800, hopPos = 0;
     juce::AudioBuffer<float> preBuf, deltaBuf;
+    std::vector<float> monoIn, monoOut;
     DelayLine preDelay, deltaDelay;
     juce::MidiBuffer midi;
     juce::uint32 nextId = 1;

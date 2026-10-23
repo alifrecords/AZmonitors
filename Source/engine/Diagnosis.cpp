@@ -389,11 +389,47 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
         // Kompressor ham uzoq muddatli spektrni biroz o'zgartiradi (pauzalardagi shovqin ko'tariladi) —
         // shuning uchun dinamika bosqichida EQ deb hisoblash chegarasi yuqoriroq
         const float spreadD = b.levelSpread - a.levelSpread;   // manfiy = darajalar tekislandi (siqildi)
+        const bool hasT = pts[i].hasTransfer;
         const bool hasGr = pts[i].grRange >= 0.0f;
         st.grRange = pts[i].grRange;
         st.effRatio = pts[i].grSlope > -0.95f ? 1.0f / (1.0f + pts[i].grSlope) : 20.0f;
-        const bool isDyn = hasGr ? (pts[i].grRange >= 2.0f && pts[i].grSlope < -0.08f) : (crestD <= -1.0f || spreadD <= -1.5f);
-        const float eqThreshold = isDyn ? 3.0f : 1.5f;
+        st.measuredResponse = hasT;
+        const float cohAvg = hasT ? pts[i].cohAvg : 1.0f;
+
+        // Rack slotlari: o'lchangan H(f) — plagin har bir chastotada aniq qancha o'zgartirgani
+        // (o'rtacha spektrlar farqidan farqli o'laroq, kirish signalidagi tasodifiy o'zgarishlarga bog'liq emas)
+        if (hasT)
+        {
+            std::vector<float> hv;
+            for (int k = 0; k < kNumBands; ++k)
+                if (pts[i].usable[(size_t) k] && bandCentre (k) >= 200.0f && bandCentre (k) <= 5000.0f) hv.push_back (pts[i].h[(size_t) k]);
+            float overall = 0;
+            if (! hv.empty()) { std::nth_element (hv.begin(), hv.begin() + (long) hv.size() / 2, hv.end()); overall = hv[hv.size() / 2]; }
+            maxBoost = maxCut = boostHz = cutHz = 0; lfRise = 0; lfN = 0;
+            for (int k = 0; k < kNumBands; ++k)
+            {
+                const bool u = pts[i].usable[(size_t) k] && pts[i].coh[(size_t) k] > 0.3f;
+                st.bandDelta[(size_t) k] = u ? pts[i].h[(size_t) k] - overall : 0.0f;
+                usable[(size_t) k] = u;
+                const float fc = bandCentre (k), d = st.bandDelta[(size_t) k];
+                if (! u) continue;
+                if (fc >= 40.0f && fc <= 120.0f) { lfRise += d; ++lfN; }
+                if (fc < 40.0f || fc > 16000.0f) continue;
+                if (d > maxBoost) { maxBoost = d; boostHz = fc; }
+                if (d < maxCut)   { maxCut = d;   cutHz = fc; }
+            }
+            lfRise = lfN > 0 ? lfRise / (float) lfN : 0.0f;
+        }
+
+        bool isDyn;
+        if (hasT && hasGr) isDyn = pts[i].grCorr <= -0.45f && pts[i].grRange >= 1.5f;       // gain kirish darajasiga bog'liq
+        else if (hasGr)    isDyn = pts[i].grRange >= 2.0f && pts[i].grSlope < -0.08f;
+        else               isDyn = crestD <= -1.0f || spreadD <= -1.5f;
+        // Nochiziqli (saturatsiya / clipper): peaklar kesiladi (crest kamayadi), lekin gain kirish darajasiga
+        // bog'liq emas (kompressor emas). Ovoz davriy bo'lgani uchun garmonikalar kogerent — faqat kogerentlikka tayanmaymiz.
+        const bool nonLinear = hasT && ! isDyn && (cohAvg < 0.90f || crestD <= -1.5f);
+        const float maxEqLocal = juce::jmax (maxBoost, -maxCut);
+        const float eqThreshold = hasT ? (isDyn ? 5.0f : 1.0f) : (isDyn ? 3.0f : 1.5f);
         float maxEqMid = 0, midBoost = 0, midCut = 0, midBoostHz = 0, midCutHz = 0;
         for (int k = bandForFreq (120.0f); k <= bandForFreq (12000.0f); ++k)
         {
@@ -402,7 +438,7 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
             if (d > midBoost) { midBoost = d; midBoostHz = bandCentre (k); }
             if (d < midCut)   { midCut = d;   midCutHz = bandCentre (k); }
         }
-        const float eqForRole = isDyn ? maxEqMid : maxEq;
+        const float eqForRole = hasT ? maxEqLocal : (isDyn ? maxEqMid : maxEq);
 
         // 1/3-oktava guruhlar (konflikt qidirish uchun), 120 Hz dan yuqori
         for (int g = 0; g * 2 + 1 < kNumBands; ++g)
@@ -410,101 +446,129 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
             const float fc = bandCentre (g * 2);
             if (fc < 120.0f || fc > 14000.0f) continue;
             const float d = 0.5f * (st.bandDelta[(size_t) (g * 2)] + st.bandDelta[(size_t) (g * 2 + 1)]);
-            if (std::abs (d) >= (isDyn ? 3.0f : 1.5f)) moves.push_back ({ rep.stages.size(), g, d });
+            if (std::abs (d) >= (isDyn && ! hasT ? 3.0f : 1.5f)) moves.push_back ({ rep.stages.size(), g, d });
         }
 
         // Vazifani aniqlash
         juce::StringArray roles;
         if (isDyn) roles.add ("Kompressor / limiter");
         if (sibD <= -1.5f && eqForRole < 4.0f) roles.add ("De-esser");
-        if (eqForRole >= eqThreshold) roles.add ("EQ / tembr");
-        if (st.snrChange < -6.0f && ! isDyn) roles.add ("Effekt (reverb/shovqin)");
+        if (nonLinear) roles.add (crestD <= -1.5f ? "Saturatsiya / clipper" : "Saturatsiya / effekt");
+        else if (eqForRole >= eqThreshold) roles.add ("EQ / tembr");
+        if (! hasT && st.snrChange < -6.0f && ! isDyn) roles.add ("Effekt (reverb/shovqin)");
         if (roles.isEmpty() && std::abs (st.gainChange) >= 0.5f) roles.add ("Gain");
-        const bool noEffect = roles.isEmpty() && std::abs (st.gainChange) < 0.3f && std::abs (crestD) < 0.3f && maxEq < 0.6f;
+        const bool noEffect = roles.isEmpty() && std::abs (st.gainChange) < 0.3f && std::abs (crestD) < 0.5f
+                              && maxEqLocal < (hasT ? 0.5f : 0.6f) && cohAvg > 0.95f;
         st.role = noEffect ? juce::String ("Ta'siri sezilmadi")
                            : roles.isEmpty() ? juce::String ("Kichik tembr o'zgarishi") : roles.joinIntoString (" + ");
+        if (hasT)
+            st.confidence = isDyn ? juce::roundToInt (std::abs (pts[i].grCorr) * 100.0f)
+                          : nonLinear ? juce::jlimit (60, 95, juce::roundToInt (60.0f + std::abs (crestD) * 8.0f))
+                          : juce::roundToInt (cohAvg * 100.0f);
 
-        // Effekt matni
+        // Effekt matni: eng muhim 3 ta EQ o'zgarishi (mahalliy cho'qqilar)
         juce::StringArray fx;
         fx.add ("Daraja " + fmtDb (st.gainChange, 1, " LU"));
-        fx.add ("Crest " + juce::String (a.crest, 1) + juce::String::fromUTF8 (" → ") + juce::String (b.crest, 1) + " dB");
         if (hasGr && isDyn)
             fx.add ("GR " + juce::String (pts[i].grRange, 1) + " dB, ratio ~" + juce::String (st.effRatio, 1) + ":1");
-        if (std::abs (spreadD) >= 1.0f)
-            fx.add ("Tarqalish " + juce::String (a.levelSpread, 1) + juce::String::fromUTF8 (" → ") + juce::String (b.levelSpread, 1) + " dB");
-        if (isDyn)
+        if (! nonLinear)   // saturatsiyada H(f) EQ ma'nosiga ega emas
         {
-            if (midBoost >= 1.0f) fx.add (fmtHz (midBoostHz) + " " + fmtDb (midBoost));
-            if (midCut <= -1.0f)  fx.add (fmtHz (midCutHz) + " " + fmtDb (midCut));
+            struct Peak { float hz, db; };
+            std::vector<Peak> peaks;
+            const int lo = bandForFreq (40.0f), hi = bandForFreq (16000.0f);
+            const float minDb = isDyn ? 2.5f : 1.0f;
+            for (int k = lo; k <= hi; ++k)
+            {
+                const float d = st.bandDelta[(size_t) k];
+                if (std::abs (d) < minDb || ! usable[(size_t) k]) continue;
+                const float prev = k > lo ? st.bandDelta[(size_t) (k - 1)] : 0.0f, next = k < hi ? st.bandDelta[(size_t) (k + 1)] : 0.0f;
+                if ((d > 0 && d >= prev && d >= next) || (d < 0 && d <= prev && d <= next)) peaks.push_back ({ bandCentre (k), d });
+            }
+            std::sort (peaks.begin(), peaks.end(), [] (const Peak& x, const Peak& y) { return std::abs (x.db) > std::abs (y.db); });
+            if (peaks.size() > 3) peaks.resize (3);
+            std::sort (peaks.begin(), peaks.end(), [] (const Peak& x, const Peak& y) { return x.hz < y.hz; });
+            for (auto& pk : peaks) fx.add (fmtHz (pk.hz) + " " + fmtDb (pk.db));
         }
-        else
-        {
-            if (maxBoost >= 1.0f) fx.add (fmtHz (boostHz) + " " + fmtDb (maxBoost));
-            if (maxCut <= -1.0f)  fx.add (fmtHz (cutHz) + " " + fmtDb (maxCut));
-        }
+        if (nonLinear) fx.add ("peaklar " + fmtDb (crestD) + " kesildi");
         if (std::abs (sibD) >= 1.0f) fx.add ("Sibilyant " + fmtDb (sibD));
         st.effect = fx.joinIntoString (" | ");
 
-        // Qoidalar
+        // Qoidalar (eng muhimlari birinchi)
         int problems = 0, warns = 0;
-        juce::StringArray adv;
+        std::vector<std::pair<int, juce::String>> advList;
+        auto addAdv = [&advList] (int severity, const juce::String& text) { advList.push_back ({ severity, text }); };
         if (hasGr && isDyn && pts[i].grRange >= 8.0f)
         {
             if (pts[i].grRange >= 12.0f) ++problems; else ++warns;
-            adv.add ("Gain reduction " + juce::String (pts[i].grRange, 1) + " dB oralig'ida o'zgaradi, samarali ratio ~" + juce::String (st.effRatio, 1)
+            addAdv (pts[i].grRange >= 12.0f ? 2 : 1, "Gain reduction " + juce::String (pts[i].grRange, 1) + " dB oralig'ida o'zgaradi, samarali ratio ~" + juce::String (st.effRatio, 1)
                      + ":1. Vokal uchun bitta kompressorda 3-6 dB GR va 2-4:1 yetarli - threshold'ni ko'taring, ratio'ni kamaytiring.");
         }
-        else if (crestD <= -7.0f || spreadD <= -7.0f)
+        else if ((! hasT || isDyn) && (crestD <= -7.0f || spreadD <= -7.0f))
         {
             ++problems;
-            adv.add ("Haddan ortiq siqish: crest " + juce::String (-crestD, 1) + " dB, darajalar tarqalishi " + juce::String (-spreadD, 1) + " dB kamaydi. Gain reduction'ni 3-5 dB ga tushiring, "
+            addAdv (2, "Haddan ortiq siqish: crest " + juce::String (-crestD, 1) + " dB, darajalar tarqalishi " + juce::String (-spreadD, 1) + " dB kamaydi. Gain reduction'ni 3-5 dB ga tushiring, "
                      "attack'ni 10-20 ms, release'ni 80-150 ms qiling yoki ratio'ni 2.5-3:1 ga kamaytiring.");
         }
-        else if (crestD <= -5.0f || spreadD <= -4.5f)
+        else if ((! hasT || isDyn) && (crestD <= -5.0f || spreadD <= -4.5f))
         {
             ++warns;
-            adv.add ("Siqish kuchli (crest " + juce::String (crestD, 1) + " dB, tarqalish " + juce::String (spreadD, 1) + " dB). Agar oldinda boshqa kompressor bo'lsa, bu yerda 1-2 dB kamroq siqing.");
+            addAdv (1, "Siqish kuchli (crest " + juce::String (crestD, 1) + " dB, tarqalish " + juce::String (spreadD, 1) + " dB). Agar oldinda boshqa kompressor bo'lsa, bu yerda 1-2 dB kamroq siqing.");
         }
         if (isDyn && lfRise >= 4.0f)
         {
             ++warns;
-            adv.add ("Kompressor past chastotali shovqin/rumble'ni " + fmtDb (lfRise) + " ko'tardi (pauzalarda). "
+            addAdv (1, "Kompressor past chastotali shovqin/rumble'ni " + fmtDb (lfRise) + " ko'tardi (pauzalarda). "
                      "Undan oldingi HPF'ni kuchaytiring (100 Hz, 24 dB/okt) yoki kompressordan oldin gate qo'ying.");
         }
         if (maxEqMid >= 9.0f && ! isDyn)
         {
             ++warns;
-            adv.add ("Keskin EQ (" + fmtDb (maxEqMid) + "). Katta o'zgarish odatda manba/mikrofon muammosini bildiradi - kichikroq qadamlarda, kengroq Q bilan ishlang.");
+            addAdv (1, "Keskin EQ (" + fmtDb (maxEqMid) + "). Katta o'zgarish odatda manba/mikrofon muammosini bildiradi - kichikroq qadamlarda, kengroq Q bilan ishlang.");
         }
         else if (maxBoost >= 4.0f && boostHz >= 2500.0f && boostHz <= 5000.0f)
         {
             ++warns;
-            adv.add (fmtHz (boostHz) + " da " + fmtDb (maxBoost) + " ko'tarish - vokal achchiq bo'lishi mumkin. Boost'ni 2 dB gacha kamaytiring.");
+            addAdv (1, fmtHz (boostHz) + " da " + fmtDb (maxBoost) + " ko'tarish - vokal achchiq bo'lishi mumkin. Boost'ni 2 dB gacha kamaytiring.");
         }
         if (sibD >= 2.0f)
         {
             ++warns;
-            adv.add ("Bu bosqich sibilyantni " + fmtDb (sibD) + " kuchaytirdi. Undan keyin de-esser qo'ying yoki yuqori chastota boost'ini kamaytiring.");
+            addAdv (1, "Bu bosqich sibilyantni " + fmtDb (sibD) + " kuchaytirdi. Undan keyin de-esser qo'ying yoki yuqori chastota boost'ini kamaytiring.");
         }
-        if (st.snrChange < -6.0f && ! roles.contains ("Kompressor / limiter"))
+        if (! hasT && st.snrChange < -6.0f && ! roles.contains ("Kompressor / limiter"))
         {
             ++warns;
-            adv.add ("Signal/shovqin nisbati " + juce::String (juce::roundToInt (-st.snrChange)) + " dB yomonlashdi (shovqin yoki hum qo'shildi). Plaginning noise/hum sozlamasini o'chiring.");
+            addAdv (1, "Signal/shovqin nisbati " + juce::String (juce::roundToInt (-st.snrChange)) + " dB yomonlashdi (shovqin yoki hum qo'shildi). Plaginning noise/hum sozlamasini o'chiring.");
+        }
+        if (crestD >= 5.0f && ! isDyn)
+        {
+            ++warns;
+            addAdv (1, "Bu plagindan keyin peaklar keskinlashdi (crest +" + juce::String (crestD, 1) + " dB). Sababi odatda katta EQ boost'lari "
+                       "yoki chiziqli-faza (linear phase) EQ'ning pre-ringing'i: boost'larni kamaytiring yoki minimal-faza rejimiga o'ting.");
+        }
+        if (i + 1 == pts.size() && b.truePeakMax > 0.0f)
+        {
+            ++problems;
+            addAdv (2, "Chiqish " + fmtDb (b.truePeakMax, 1, " dBTP") + ": signal 0 dBFS dan oshdi (clipping xavfi). "
+                       "Shu plaginning output/ceiling'ini kamida " + juce::String (b.truePeakMax + 1.0f, 1) + " dB pasaytiring.");
         }
         if (i + 1 < pts.size() && b.truePeakMax > 0.0f)
         {
             ++warns;
-            adv.add ("Bu bosqich chiqishi " + fmtDb (b.truePeakMax, 1, " dBTP") + ". DAW floating-point'da saqlab qoladi, lekin keyingi analog emulyatsiya "
+            addAdv (1, "Bu bosqich chiqishi " + fmtDb (b.truePeakMax, 1, " dBTP") + ". DAW floating-point'da saqlab qoladi, lekin keyingi analog emulyatsiya "
                      "(UAD va boshqalar) plagini kirishida overload bo'ladi. Plagin output'ini pasaytiring.");
         }
         auto outOfRange = [] (float rms) { return rms > kNoValue + 1 && (rms > -10.0f || rms < -30.0f); };
         if (outOfRange (a.rmsActive) && (i == 1 || ! outOfRange (pts[i - 2].f.rmsActive)))
         {
             ++warns;
-            adv.add ("Kirish darajasi " + juce::String (a.rmsActive, 1) + " dBFS RMS. Analog emulyatsiya plaginlari (UAD-2, 1176/LA-2A tipidagi) "
+            addAdv (1, "Kirish darajasi " + juce::String (a.rmsActive, 1) + " dBFS RMS. Analog emulyatsiya plaginlari (UAD-2, 1176/LA-2A tipidagi) "
                      "-18 dBFS RMS (= 0 VU) atrofida eng to'g'ri ishlaydi - oldingi bosqich output'i bilan moslang.");
         }
 
+        std::stable_sort (advList.begin(), advList.end(), [] (const auto& x, const auto& y) { return x.first > y.first; });
+        juce::StringArray adv;
+        for (size_t k = 0; k < advList.size() && k < 3; ++k) adv.add (advList[k].second);
         st.advice = adv.joinIntoString ("\n");
         if (noEffect)
         {
@@ -608,6 +672,21 @@ void diagnoseChain (const std::vector<ChainPoint>& pts, const Profile& p, Report
             st.status = Status::Problem;
             st.score = juce::jmin (st.score, 40);
         }
+    }
+
+    // Bitta jumlalik xulosa (yakuniy holatga ko'ra)
+    for (auto& st : rep.stages)
+    {
+        if (! st.valid) { st.verdict = "Tahlil kutilmoqda - trekni ijro eting."; continue; }
+        if (st.status == Status::Redundant) { st.verdict = "Signalga deyarli ta'sir qilmayapti."; continue; }
+        juce::StringArray keep;
+        for (auto& part : juce::StringArray::fromTokens (st.effect, "|", ""))
+            if (! part.trim().startsWith ("Daraja") && keep.size() < 3) keep.add (part.trim());
+        const juce::String what = keep.isEmpty() ? juce::String() : ": " + keep.joinIntoString (", ");
+        const juce::String tail = st.status == Status::Ideal ? " - me'yorda."
+                                : st.status == Status::Warn ? " - kichik kamchilik bor."
+                                : " - tuzatish kerak.";
+        st.verdict = st.role + what + tail;
     }
 
     double s = 0; int n = 0;

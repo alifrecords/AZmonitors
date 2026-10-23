@@ -324,7 +324,10 @@ void Rack::prepare (double sr, int block, int channels)
             s->latency = s->plugin->getLatencySamples();
         }
         s->analyzer->prepare (sr, numCh);
+        s->transfer->prepare (sr);
     }
+    monoIn.assign ((size_t) maxBlock, 0.0f);
+    monoOut.assign ((size_t) maxBlock, 0.0f);
 }
 
 void Rack::release()
@@ -365,7 +368,12 @@ void Rack::process (juce::AudioBuffer<float>& work, int chForAnalysis, int n, do
             for (int c = 0; c < 2; ++c) { auto* x = view.getReadPointer (c); for (int i = 0; i < n; ++i) e += (double) x[i] * x[i]; }
             return e;
         };
-        if (analyse && ! byp) s.hopIn += energy();
+        if (analyse && ! byp)
+        {
+            s.hopIn += energy();
+            const auto* l = view.getReadPointer (0); const auto* r = view.getReadPointer (1);
+            for (int i = 0; i < n; ++i) monoIn[(size_t) i] = 0.5f * (l[i] + r[i]);
+        }
 
         if (s.plugin != nullptr)
         {
@@ -386,6 +394,9 @@ void Rack::process (juce::AudioBuffer<float>& work, int chForAnalysis, int n, do
         {
             s.analyzer->pushAudio (view.getArrayOfReadPointers(), chForAnalysis, n, t, tv);
             s.hopOut += energy();
+            const auto* l = view.getReadPointer (0); const auto* r = view.getReadPointer (1);
+            for (int i = 0; i < n; ++i) monoOut[(size_t) i] = 0.5f * (l[i] + r[i]);
+            s.transfer->push (monoIn.data(), monoOut.data(), n, s.latency.load());
         }
 
         if (doDelta)
@@ -478,6 +489,7 @@ void Rack::insert (std::unique_ptr<juce::AudioPluginInstance> inst, const juce::
         slot->plugin = std::move (inst);
     }
     slot->analyzer->prepare (sampleRate, numCh);
+    slot->transfer->prepare (sampleRate);
 
     auto copy = getSlots();
     index = juce::jlimit (0, (int) copy.size(), index < 0 ? (int) copy.size() : index);
@@ -531,6 +543,102 @@ std::vector<std::shared_ptr<Analyzer>> Rack::getAnalyzers() const
     return out;
 }
 
+std::vector<std::shared_ptr<TransferAnalyzer>> Rack::getTransfers() const
+{
+    std::vector<std::shared_ptr<TransferAnalyzer>> out;
+    const juce::SpinLock::ScopedLockType sl (lock);
+    for (auto& s : slots) out.push_back (s->transfer);
+    return out;
+}
+
+void Rack::pollParameters (bool playing, double dt)
+{
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    for (auto& sp : getSlots())
+    {
+        auto& s = *sp;
+        if (s.plugin == nullptr) continue;
+        const auto params = s.plugin->getParameters();
+        const bool first = (int) s.lastParams.size() != params.size();
+        if (first) s.lastParams.assign ((size_t) params.size(), 0.0f);
+
+        const auto tsnap = s.transfer->getSnapshot();
+        for (int i = 0; i < params.size(); ++i)
+        {
+            auto* p = params[i];
+            const float v = p->getValue();
+            const float old = s.lastParams[(size_t) i];
+            s.lastParams[(size_t) i] = v;
+            if (first || std::abs (v - old) < 1.0e-4f) continue;
+            if (p->getName (40).containsIgnoreCase ("bypass") || p->getName (40).containsIgnoreCase ("meter")) continue;
+
+            // Bir knobni burish ketma-ketligi bitta voqea sifatida yoziladi
+            if (! s.events.empty() && s.events.front().param == p->getName (40) && nowMs - s.events.front().lastChangeMs < 2500.0)
+            {
+                auto& e = s.events.front();
+                e.to = p->getCurrentValueAsText();
+                e.lastChangeMs = nowMs;
+                e.playedSinceChange = 0;
+                e.samplesAtChange = s.transfer->getPushedSamples();
+                e.reaction.clear();
+                continue;
+            }
+            ParamEvent e;
+            e.when = juce::Time::getCurrentTime();
+            e.param = p->getName (40);
+            e.from = p->getText (old, 32);
+            e.to = p->getCurrentValueAsText();
+            e.lastChangeMs = nowMs;
+            e.samplesAtChange = s.transfer->getPushedSamples();
+            if (tsnap.valid) { e.hBefore = tsnap.hFast; e.usableBefore = tsnap.usable; e.hasBefore = true; }
+            e.grBefore = s.getGainStats().grRecent();
+            s.events.push_front (e);
+            while (s.events.size() > 12) s.events.pop_back();
+        }
+
+        // Reaksiya: o'zgarishdan keyin ~1.5 s ijro bo'lgach, javob qanchalik o'zgarganini o'lchaymiz
+        for (auto& e : s.events)
+        {
+            if (e.reaction.isNotEmpty()) continue;
+            // O'zgarishdan keyin ~1.5 s audio haqiqatda tahlil qilingach (ijro to'xtasa — kutadi)
+            juce::ignoreUnused (playing, dt);
+            if (! tsnap.valid || e.samplesAtChange < 0) continue;
+            if ((double) (tsnap.analysedSamples - e.samplesAtChange) < 1.8 * tsnap.sampleRate) continue;
+
+            juce::StringArray parts;
+            if (e.hasBefore)
+            {
+                float best = 0, bestHz = 0, sum = 0; int cnt = 0;
+                std::vector<float> diffs;
+                for (int b = bandForFreq (40.0f); b <= bandForFreq (16000.0f); ++b)
+                {
+                    if (! tsnap.usable[(size_t) b] || ! e.usableBefore[(size_t) b]) continue;
+                    const float d = tsnap.hFast[(size_t) b] - e.hBefore[(size_t) b];
+                    diffs.push_back (d); sum += d; ++cnt;
+                }
+                if (cnt > 0)
+                {
+                    std::sort (diffs.begin(), diffs.end());
+                    const float median = diffs[diffs.size() / 2];
+                    for (int b = bandForFreq (40.0f); b <= bandForFreq (16000.0f); ++b)
+                    {
+                        if (! tsnap.usable[(size_t) b] || ! e.usableBefore[(size_t) b]) continue;
+                        const float d = tsnap.hFast[(size_t) b] - e.hBefore[(size_t) b] - median;
+                        if (std::abs (d) > std::abs (best)) { best = d; bestHz = bandCentre (b); }
+                    }
+                    if (std::abs (median) >= 0.5f) parts.add ("umumiy daraja " + fmtDb (median));
+                    if (std::abs (best) >= 0.7f)   parts.add (fmtHz (bestHz) + " " + fmtDb (best));
+                }
+            }
+            const float grNow = s.getGainStats().grRecent();
+            if (e.grBefore >= 0 && grNow >= 0 && std::abs (grNow - e.grBefore) >= 1.0f)
+                parts.add ("gain reduction " + juce::String (e.grBefore, 1) + juce::String::fromUTF8 (" → ") + juce::String (grNow, 1) + " dB");
+            e.reaction = parts.isEmpty() ? juce::String ("Ovozda sezilarli o'zgarish yo'q (0.5 dB dan kam)")
+                                         : "Ovoz reaksiyasi: " + parts.joinIntoString (", ");
+        }
+    }
+}
+
 int Rack::computeTotalLatency() const
 {
     int total = 0;
@@ -547,6 +655,7 @@ void Rack::resetAnalyzers()
     for (auto& s : getSlots())
     {
         s->analyzer->requestReset();
+        s->transfer->requestReset();
         s->statsReset = true;
         const juce::SpinLock::ScopedLockType sl (s->statsLock);
         s->publishedStats = GainStats();
@@ -608,6 +717,7 @@ void Rack::restoreState (const juce::ValueTree& rack, juce::AudioPluginFormatMan
             restoreErrors << slot->displayName() << ": " << (err.isNotEmpty() ? err : juce::String ("topilmadi")) << "\n";
         }
         slot->analyzer->prepare (sampleRate, numCh);
+        slot->transfer->prepare (sampleRate);
         fresh.push_back (slot);
     }
     deltaSlot = -1;

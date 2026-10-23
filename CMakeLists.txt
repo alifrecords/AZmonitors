@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(AZMonitoring VERSION 0.2.0 LANGUAGES C CXX)
+project(AZMonitoring VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,6 +65,7 @@ target_sources(AZMonitoring PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/dsp/Analyzer.cpp
+    Source/dsp/Transfer.cpp
     Source/engine/Diagnosis.cpp
     Source/engine/Profiles.cpp
     Source/engine/ProbeRegistry.cpp
@@ -164,7 +165,7 @@ if(AZ_BUILD_SNAPSHOT)
     juce_add_console_app(AZSnapshot PRODUCT_NAME "AZ Snapshot")
     target_sources(AZSnapshot PRIVATE
         tests/Snapshot.cpp
-        Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/dsp/Analyzer.cpp
+        Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/dsp/Analyzer.cpp Source/dsp/Transfer.cpp
         Source/engine/Diagnosis.cpp Source/engine/Profiles.cpp Source/engine/ProbeRegistry.cpp Source/gui/Views.cpp Source/gui/RackViews.cpp Source/rack/Rack.cpp)
     target_include_directories(AZSnapshot PRIVATE Source)
     target_compile_definitions(AZSnapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 AZ_SNAPSHOT=1 JUCE_PLUGINHOST_VST3=1)
@@ -176,12 +177,14 @@ endif()
 # ---------------------------------------------------------------------------
 option(AZ_BUILD_TEST_PLUGINS "Rack sinov plaginlarini qurish" OFF)
 if(AZ_BUILD_TEST_PLUGINS)
-    foreach(kind Comp EQ Crash)
+    foreach(kind Comp EQ Crash Sat)
         string(TOUPPER ${kind} KIND)
         if(kind STREQUAL "Comp")
             set(CODE Atcp)
         elseif(kind STREQUAL "Crash")
             set(CODE Atcr)
+        elseif(kind STREQUAL "Sat")
+            set(CODE Atst)
         else()
             set(CODE Ateq)
         endif()

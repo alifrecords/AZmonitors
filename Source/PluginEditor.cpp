@@ -51,7 +51,7 @@ AZRootView::AZRootView (AZMonitoringProcessor& p)
 
     updateModeLayout();
     timerCallback();
-    startTimerHz (8);
+    startTimerHz (12);
 }
 
 AZRootView::~AZRootView() { stopTimer(); }
@@ -164,6 +164,23 @@ void AZRootView::paint (juce::Graphics& g)
         g.fillRoundedRectangle (juce::Rectangle<float> (342, 24, 432, 42), 9.0f);
         g.setColour (border);
         g.drawRoundedRectangle (juce::Rectangle<float> (342.5f, 24.5f, 431, 41), 9.0f, 1.0f);
+    }
+
+    // Transport holati: tahlil faqat ijro paytida (Stop — to'xtaydi, Play — yangidan boshlanadi)
+    if (! probe)
+    {
+        const bool known = proc.isTransportKnown(), playing = proc.isTransportPlaying();
+        const juce::String st = ! known ? juce::String ("TAHLIL") : playing ? juce::String ("TAHLIL QILINMOQDA") : juce::String ("TO'XTATILGAN - Play bosing");
+        const auto col = (! known || playing) ? ok : text3;
+        g.setFont (sans (11.0f, true));
+        const float w = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), st) + 26;
+        g.setFont (sans (10.5f, true));
+        const juce::Rectangle<float> pill ((float) (kContentX + kContentW - 250 - 140), 3, w, 18);
+        g.setColour (col.withAlpha (0.12f)); g.fillRoundedRectangle (pill, 12.0f);
+        g.setColour (col);
+        if (! known || playing) g.fillEllipse (pill.getX() + 10, pill.getCentreY() - 3.5f, 7, 7);
+        else { g.fillRect (pill.getX() + 10, pill.getCentreY() - 3.5f, 2.5f, 7.0f); g.fillRect (pill.getX() + 14.5f, pill.getCentreY() - 3.5f, 2.5f, 7.0f); }
+        g.drawText (st, pill.withTrimmedLeft (22).withTrimmedRight (4), juce::Justification::centredLeft);
     }
 
     // Holat satri

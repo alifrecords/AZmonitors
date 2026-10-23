@@ -53,7 +53,28 @@ struct CrashOnLoad { CrashOnLoad() { if (std::getenv ("AZ_NO_CRASH") == nullptr)
 static CrashOnLoad crashOnLoad;
 #endif
 
-#if AZTEST_COMP
+#if AZTEST_SAT
+class Plugin final : public TestProcessor
+{
+public:
+    Plugin()
+    {
+        addParameter (drive = new juce::AudioParameterFloat ({ "drive", 1 }, "Drive", juce::NormalisableRange<float> (0, 30, 0.1f), 12, unit (" dB", 1)));
+    }
+    void prepareToPlay (double, int) override {}
+    void processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&) override
+    {
+        const float g = juce::Decibels::decibelsToGain (drive->get());
+        for (int c = 0; c < b.getNumChannels(); ++c)
+        {
+            auto* x = b.getWritePointer (c);
+            for (int i = 0; i < b.getNumSamples(); ++i) x[i] = std::tanh (x[i] * g) / g * 1.5f;
+        }
+    }
+private:
+    juce::AudioParameterFloat* drive;
+};
+#elif AZTEST_COMP
 class Plugin final : public TestProcessor
 {
 public:

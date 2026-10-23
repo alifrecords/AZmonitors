@@ -50,6 +50,17 @@ Imkoniyatlar:
 - **Preset.** Butun zanjirni `.azrack` fayl sifatida saqlash va boshqa loyihaga yuklash mumkin. Loyiha qayta ochilganda rack plaginlari va ularning sozlamalari avtomatik tiklanadi. Agar biror plagin boshqa kompyuterda o'rnatilmagan bo'lsa, uning sozlamalari baribir yo'qolmaydi.
 - **Plagin qo'shish oynasida** qidiruv va toifalar bor (EQ, Dinamika, De-esser, Saturatsiya, Reverb/Delay, UAD-2). Bundan tashqari **AZ tavsiyasi** chiqadi: tashxisga ko'ra zanjirga nima yetishmayotgani va sizda o'rnatilganlardan qaysi biri mos kelishi.
 
+**Aniq o'lchov (v0.3).** Rack ichida har bir plaginning kirish va chiqish signali bir vaqtda mavjud. Shuning uchun AZ o'lchov vositalaridagi usul bilan ishlaydi: **uzatish funksiyasi H(f)** va **kogerentlik**.
+- **Javob egri chizig'i**: plaginning haqiqiy EQ egri chizig'i real vaqtda chiziladi. Ko'tarilgan joylar to'q sariq, kesilganlar ko'k. Knobni bursangiz, egri chiziq bir soniya ichida o'zgaradi. Sinovda 320 Hz da sozlangan −3.5 dB o'lchovda −3.2 dB chiqdi.
+- **Vazifani aniqlash** foiz bilan ko'rsatiladi:
+  - **EQ** — o'zgarish chiziqli;
+  - **Kompressor** — gain kirish darajasiga bog'liq; bunda haqiqiy gain reduction va samarali ratio ham o'lchanadi;
+  - **Saturatsiya/clipper** — peaklar kesiladi, lekin gain darajaga bog'liq emas.
+- **Spektrogramma**: plagin vaqt davomida signalda nimani ko'targani va nimani kesgani ko'rinadi. Ikki rejim bor: "O'zgarish" va "Chiqish".
+- **O'zgarishlar jurnali**: plaginda qaysi parametrni o'zgartirganingiz va bunga ovoz qanday reaksiya qilgani yoziladi. Masalan: "Gain 4.0 → 8.0 dB → ovoz reaksiyasi: 359 Hz +3.7 dB".
+- **Play/Stop**: Stop bosilganda tahlil to'xtaydi, Play bosilganda yangidan boshlanadi. Buni Sozlamalar sahifasida o'chirish mumkin. Sarlavhada joriy holat ko'rinib turadi.
+- **Xulosa**: har bir plagin uchun bitta jumla, keyin muhimlik tartibida eng ko'pi bilan 3 ta aniq amal.
+
 **Xavfsiz skanerlash.** Plaginlar DAW ichida emas, plagin bilan birga keladigan alohida **AZPluginScanner** dasturida tekshiriladi. Biror plagin qulab tushsa (eski, buzilgan yoki o'rnatilishi to'liq bo'lmagan plaginlar), faqat shu yordamchi dastur yopiladi: Cubase, Ableton yoki Pro Tools ishlashda davom etadi. Qulagan plagin ro'yxatda "ochilmadi" deb ko'rsatiladi va keyingi skanerlashda o'tkazib yuboriladi. To'liq qayta skanerlashda unga yana bir imkon beriladi.
 
 **Birinchi ishga tushirish.** Plagin qo'shish oynasida **"Qayta skanerlash"** tugmasini bosing. AZ kompyuteringizdagi plaginlarni bir marta ro'yxatga oladi. Agar biror plagin skanerlash paytida DAW'ni yopib yuborsa, keyingi safar u avtomatik o'tkazib yuboriladi.

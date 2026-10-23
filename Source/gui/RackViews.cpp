@@ -194,6 +194,215 @@ void RackList::mouseUp (const juce::MouseEvent&)
 }
 
 //==============================================================================
+// VIZUALIZATSIYA: javob egri chizig'i va spektrogramma
+//==============================================================================
+namespace
+{
+    float fx (float hz, juce::Rectangle<float> r)
+    {
+        return r.getX() + r.getWidth() * std::log10 (juce::jlimit (20.0f, 20000.0f, hz) / 20.0f) / 3.0f;
+    }
+
+    void drawFreqGrid (juce::Graphics& g, juce::Rectangle<float> r, bool labels)
+    {
+        for (float hz : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
+        {
+            const float x = fx (hz, r);
+            g.setColour (border);
+            g.drawVerticalLine ((int) x, r.getY(), r.getBottom());
+            if (labels)
+            {
+                g.setColour (text3); g.setFont (mono (9.5f));
+                g.drawText (az::fmtHz (hz).replace (" ", ""), juce::Rectangle<float> (x - 24, r.getBottom() + 2, 48, 12), juce::Justification::centred);
+            }
+        }
+    }
+
+    /** Plaginning o'lchangan chastota javobi: ko'tarilgan joylar to'q sariq, kesilganlar ko'k */
+    void drawResponse (juce::Graphics& g, juce::Rectangle<float> area, const az::TransferSnapshot* ts, const az::StageResult* st)
+    {
+        g.setColour (inset);
+        g.fillRoundedRectangle (area, 8.0f);
+        const auto r = area.reduced (34, 12).withTrimmedBottom (12).withTrimmedRight (-20);
+
+        std::array<float, az::kNumBands> v {}, vLong {}, coh {};
+        std::array<bool, az::kNumBands> use {};
+        bool live = false;
+        if (ts != nullptr && ts->valid)
+        {
+            live = true;
+            v = ts->hFast; vLong = ts->hLong; coh = ts->cohFast; use = ts->usable;
+        }
+        else if (st != nullptr && st->valid)
+        {
+            v = st->bandDelta; vLong = st->bandDelta;
+            for (auto& c : coh) c = 1.0f;
+            for (int k = 0; k < az::kNumBands; ++k) use[(size_t) k] = std::abs (v[(size_t) k]) > 0.0f || az::bandCentre (k) > 100.0f;
+        }
+        else
+        {
+            g.setColour (text3); g.setFont (sans (13.0f));
+            g.drawText ("Javob egri chizig'i uchun trekni ijro eting", area, juce::Justification::centred);
+            return;
+        }
+
+        float range = 12.0f;
+        for (int k = 0; k < az::kNumBands; ++k)
+            if (use[(size_t) k] && az::bandCentre (k) >= 30.0f && az::bandCentre (k) <= 18000.0f)
+                range = juce::jmax (range, std::abs (v[(size_t) k]) + 3.0f);
+        range = juce::jmin (36.0f, std::ceil (range / 6.0f) * 6.0f);
+        auto yOf = [&] (float db) { return r.getCentreY() - juce::jlimit (-range, range, db) / range * (r.getHeight() * 0.5f); };
+
+        drawFreqGrid (g, r, true);
+        g.setFont (mono (9.5f));
+        for (float db : { -range, -range / 2, 0.0f, range / 2, range })
+        {
+            g.setColour (db == 0.0f ? border2 : border);
+            g.drawHorizontalLine ((int) yOf (db), r.getX(), r.getRight());
+            g.setColour (text3);
+            g.drawText ((db > 0 ? "+" : "") + juce::String ((int) db), juce::Rectangle<float> (area.getX() + 2, yOf (db) - 6, 28, 12), juce::Justification::centredRight);
+        }
+
+        // Ishonchsiz (signal kam yoki nochiziqli) hududlar
+        for (int k = 0; k < az::kNumBands; ++k)
+        {
+            if (use[(size_t) k] && coh[(size_t) k] >= 0.5f) continue;
+            const float fc = az::bandCentre (k);
+            const float x0 = fx (fc * std::pow (2.0f, -1.0f / 12.0f), r), x1 = fx (fc * std::pow (2.0f, 1.0f / 12.0f), r);
+            g.setColour (juce::Colours::white.withAlpha (0.025f));
+            g.fillRect (juce::Rectangle<float> (x0, r.getY(), x1 - x0, r.getHeight()));
+        }
+
+        juce::Path curve; bool started = false;
+        for (int k = 0; k < az::kNumBands; ++k)
+        {
+            const float fc = az::bandCentre (k);
+            if (fc < 25.0f || fc > 19000.0f || ! use[(size_t) k]) continue;
+            const float x = fx (fc, r), y = yOf (v[(size_t) k]);
+            if (! started) { curve.startNewSubPath (x, yOf (0)); curve.lineTo (x, y); started = true; } else curve.lineTo (x, y);
+        }
+        if (! started) return;
+        const float lastX = curve.getCurrentPosition().x;
+        juce::Path fill (curve);
+        fill.lineTo (lastX, yOf (0));
+        fill.closeSubPath();
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (juce::Rectangle<float> (r.getX(), r.getY(), r.getWidth(), yOf (0) - r.getY()).toNearestInt());
+            g.setColour (accent.withAlpha (0.30f)); g.fillPath (fill);
+        }
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (juce::Rectangle<float> (r.getX(), yOf (0), r.getWidth(), r.getBottom() - yOf (0)).toNearestInt());
+            g.setColour (info.withAlpha (0.30f)); g.fillPath (fill);
+        }
+        if (live)
+        {
+            juce::Path lp; bool s2 = false;
+            for (int k = 0; k < az::kNumBands; ++k)
+            {
+                const float fc = az::bandCentre (k);
+                if (fc < 25.0f || fc > 19000.0f || ! use[(size_t) k]) continue;
+                if (! s2) { lp.startNewSubPath (fx (fc, r), yOf (vLong[(size_t) k])); s2 = true; } else lp.lineTo (fx (fc, r), yOf (vLong[(size_t) k]));
+            }
+            g.setColour (text3.withAlpha (0.8f));
+            const float dashes[] = { 3.0f, 3.0f };
+            juce::Path dl; juce::PathStrokeType (1.0f).createDashedStroke (dl, lp, dashes, 2);
+            g.fillPath (dl);
+        }
+        g.setColour (text);
+        g.strokePath (curve, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        // Eng muhim 3 ta o'zgarish yorlig'i
+        struct Pk { int k; float db; };
+        std::vector<Pk> pk;
+        for (int k = 1; k + 1 < az::kNumBands; ++k)
+        {
+            const float fc = az::bandCentre (k), d = v[(size_t) k];
+            if (! use[(size_t) k] || fc < 30.0f || fc > 16000.0f || std::abs (d) < 1.0f || coh[(size_t) k] < 0.5f) continue;
+            if ((d > 0 && d >= v[(size_t) (k - 1)] && d >= v[(size_t) (k + 1)]) || (d < 0 && d <= v[(size_t) (k - 1)] && d <= v[(size_t) (k + 1)]))
+                pk.push_back ({ k, d });
+        }
+        std::sort (pk.begin(), pk.end(), [] (const Pk& a, const Pk& b) { return std::abs (a.db) > std::abs (b.db); });
+        for (size_t i = 0; i < pk.size() && i < 3; ++i)
+        {
+            const float x = fx (az::bandCentre (pk[i].k), r), y = yOf (pk[i].db);
+            const auto label = az::fmtHz (az::bandCentre (pk[i].k)).replace (" ", "") + " " + az::fmtDb (pk[i].db, 1, "");
+            g.setFont (mono (10.5f, true));
+            const float w = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), label) + 10;
+            const juce::Rectangle<float> box (juce::jlimit (r.getX(), r.getRight() - w, x - w / 2), pk[i].db > 0 ? y - 20 : y + 4, w, 16);
+            g.setColour (bg.withAlpha (0.85f)); g.fillRoundedRectangle (box, 4.0f);
+            g.setColour (pk[i].db > 0 ? accent : info);
+            g.drawText (label, box, juce::Justification::centred);
+            g.fillEllipse (x - 3, y - 3, 6, 6);
+        }
+
+        g.setColour (text3); g.setFont (sans (10.5f));
+        g.drawText (live ? U ("Jonli (0.6 s) — oq chiziq,  tahlil davomidagi o'rtacha — punktir.  Kulrang hudud: signal kam / ishonchsiz.")
+                         : U ("Taxminiy (DAW inserti, probe'lar spektri farqi)"),
+                    juce::Rectangle<float> (r.getX(), area.getY() + 2, r.getWidth(), 12), juce::Justification::centredLeft, true);
+    }
+
+    juce::Colour heat (float t)   // 0..1 qora -> binafsha -> to'q sariq -> sariq
+    {
+        t = juce::jlimit (0.0f, 1.0f, t);
+        const juce::Colour c0 (0xff121418), c1 (0xff4b2a7a), c2 (0xfff06a4b), c3 (0xfff8e08e);
+        if (t < 0.4f) return c0.interpolatedWith (c1, t / 0.4f);
+        if (t < 0.75f) return c1.interpolatedWith (c2, (t - 0.4f) / 0.35f);
+        return c2.interpolatedWith (c3, (t - 0.75f) / 0.25f);
+    }
+
+    /** Spektrogramma: vaqt (chapdan o'ngga) x chastota. mode 0 = plagin o'zgarishi (ko'k/to'q sariq), 1 = chiqish darajasi */
+    void drawSpectrogram (juce::Graphics& g, juce::Rectangle<float> area, const az::TransferSnapshot* ts, int mode)
+    {
+        g.setColour (inset);
+        g.fillRoundedRectangle (area, 8.0f);
+        const auto r = area.reduced (34, 12).withTrimmedRight (-20);
+        if (ts == nullptr || (int) ts->specDelta.size() != az::TransferSnapshot::kCols * az::kNumBands || ! ts->valid)
+        {
+            g.setColour (text3); g.setFont (sans (13.0f));
+            g.drawText ("Spektrogramma uchun trekni ijro eting", area, juce::Justification::centred);
+            return;
+        }
+        constexpr int cols = az::TransferSnapshot::kCols, rows = az::kNumBands;
+        juce::Image img (juce::Image::RGB, cols, rows, false);
+        float maxOut = -120.0f;
+        if (mode == 1) for (auto v : ts->specOut) maxOut = juce::jmax (maxOut, v);
+        for (int c = 0; c < cols; ++c)
+        {
+            const int src = (ts->writeCol + c) % cols;
+            for (int b = 0; b < rows; ++b)
+            {
+                const size_t idx = (size_t) src * rows + (size_t) b;
+                juce::Colour col;
+                if (mode == 0)
+                {
+                    const float d = juce::jlimit (-12.0f, 12.0f, ts->specDelta[idx]);
+                    const float a = std::pow (std::abs (d) / 12.0f, 0.7f);
+                    col = juce::Colour (0xff121418).interpolatedWith (d > 0 ? accent : info, a);
+                }
+                else
+                    col = heat ((ts->specOut[idx] - (maxOut - 70.0f)) / 70.0f);
+                img.setPixelAt (c, rows - 1 - b, col);
+            }
+        }
+        g.setImageResamplingQuality (juce::Graphics::lowResamplingQuality);
+        g.drawImage (img, r);
+        g.setColour (text3); g.setFont (mono (9.5f));
+        for (float hz : { 100.0f, 1000.0f, 10000.0f })
+        {
+            const float y = r.getBottom() - r.getHeight() * (float) az::bandForFreq (hz) / (float) (rows - 1);
+            g.drawText (az::fmtHz (hz).replace (" ", ""), juce::Rectangle<float> (area.getX() + 2, y - 6, 30, 12), juce::Justification::centredRight);
+        }
+        g.drawText (U ("← o'tgan ~7 s"), juce::Rectangle<float> (r.getX(), r.getBottom() - 1, 120, 12), juce::Justification::centredLeft);
+        g.drawText ("hozir", juce::Rectangle<float> (r.getRight() - 60, r.getBottom() - 1, 60, 12), juce::Justification::centredRight);
+        g.setFont (sans (10.5f));
+        g.drawText (mode == 0 ? U ("Plagin o'zgarishi: to'q sariq = ko'tardi, ko'k = kesdi (±12 dB)") : U ("Plagin chiqishi: yorqin = baland"),
+                    juce::Rectangle<float> (r.getX(), area.getY() + 1, r.getWidth(), 12), juce::Justification::centredLeft, true);
+    }
+}
+
+//==============================================================================
 // RACK SAHIFASI
 //==============================================================================
 RackPage::RackPage (AZMonitoringProcessor& p) : proc (p)
@@ -258,6 +467,21 @@ RackPage::RackPage (AZMonitoringProcessor& p) : proc (p)
             repaint();
         });
     };
+
+    const char* viewNames[] = { "Javob egri chizig'i", "Spektrogramma", "Parametrlar" };
+    for (int i = 0; i < 3; ++i)
+    {
+        auto& b = viewButtons[i];
+        b.setButtonText (juce::String::fromUTF8 (viewNames[i]));
+        b.setClickingTogglesState (true);
+        b.setRadioGroupId (3001);
+        b.setColour (juce::TextButton::buttonOnColourId, border2);
+        b.onClick = [this, i] { view = i; proposals.clear(); updateButtons(); repaint(); };
+        addAndMakeVisible (b);
+    }
+    viewButtons[0].setToggleState (true, juce::dontSendNotification);
+    specModeButton.onClick = [this] { specMode = 1 - specMode; updateButtons(); repaint(); };
+    addAndMakeVisible (specModeButton);
 
     styleButton (applyButton, true);
     for (auto* b : { &applyButton, &editorButton, &deltaButton, &bypassButton, &addAfterButton, &removeButton })
@@ -410,6 +634,8 @@ void RackPage::updateButtons()
     const bool deltaOn = isRack && proc.rack.getDelta() == row->rackIndex;
     deltaButton.setButtonText (deltaOn ? "Delta: YONIQ" : "Delta tinglash");
     deltaButton.setColour (juce::TextButton::buttonColourId, deltaOn ? accent.withAlpha (0.25f) : field);
+    specModeButton.setVisible (view == 1);
+    specModeButton.setButtonText (specMode == 0 ? juce::String ("Ko'rinish: O'zgarish") : juce::String ("Ko'rinish: Chiqish"));
     const bool byp = isRack && row->rackIndex < (int) slots.size() && slots[(size_t) row->rackIndex]->bypass.load();
     bypassButton.setButtonText (byp ? "Yoqish" : "Bypass");
 }
@@ -512,7 +738,7 @@ void RackPage::paint (juce::Graphics& g)
             st->grRange >= 0 && st->role.contains ("Kompressor")
                 ? T { "Gain reduction / ratio", juce::String (st->grRange, 1) + " dB  ~" + juce::String (st->effRatio, 1) + ":1", st->grRange >= 12 ? bad : st->grRange >= 8 ? warn : ok }
                 : T { "Daraja o'zgarishi", az::fmtDb (st->gainChange, 1, " LU"), text },
-            { "Crest", juce::String (st->crestBefore, 1) + U (" → ") + juce::String (st->crestAfter, 1), crestD <= -7 ? bad : crestD <= -5 ? warn : text },
+            { "Crest (peak)", juce::String (st->crestBefore, 1) + U (" → ") + juce::String (st->crestAfter, 1), crestD <= -7 || crestD >= 5 ? warn : text },
             { "Kirish (RMS)", az::fmtDb (st->levelIn, 1, " dBFS"), (st->levelIn > -10 || st->levelIn < -30) ? warn : ok },
             { "Chiqish TP", az::fmtDb (st->tpOut, 1, " dBTP"), st->tpOut > 0 ? bad : text },
         };
@@ -526,66 +752,113 @@ void RackPage::paint (juce::Graphics& g)
             g.setColour (tiles4[i].c); g.setFont (mono (13.5f, true));
             g.drawText (tiles4[i].value, t.reduced (10, 6).withTrimmedTop (18), juce::Justification::centredLeft, true);
         }
-        y += 62;
     }
 
-    // Parametrlar yoki tavsiyalar
-    if (slot != nullptr && slot->plugin != nullptr)
+    // Vizual hudud: javob / spektrogramma / parametrlar
+    const juce::Rectangle<float> vis (x0, 290, wR, 196);
+    az::TransferSnapshot ts;
+    const bool hasTs = slot != nullptr && slot->plugin != nullptr && ! slot->bypass.load();
+    if (hasTs) ts = slot->transfer->getSnapshot();
+    const bool showProps = (! proposals.empty() && proposalsFor == selectedId) || ! applied.empty();
+
+    if (showProps || view == 2)
     {
-        const bool showProps = (! proposals.empty() && proposalsFor == selectedId) || ! applied.empty();
-        g.setColour (text); g.setFont (sans (12.5f, true));
-        g.drawText (showProps ? (applied.empty() ? "Tavsiya etilgan o'zgarishlar" : "Qo'llangan o'zgarishlar")
-                              : "Plagin parametrlari - to'g'ridan-to'g'ri o'qildi",
-                    juce::Rectangle<float> (x0, y, wR, 18), juce::Justification::centredLeft);
-        y += 24;
-        g.setColour (border); g.drawHorizontalLine ((int) y, x0, x0 + wR);
-        y += 6;
+        g.setColour (inset); g.fillRoundedRectangle (vis, 8.0f);
+        float py = vis.getY() + 10;
         if (showProps)
         {
+            g.setColour (text); g.setFont (sans (12.5f, true));
+            g.drawText (applied.empty() ? "Tavsiya etilgan o'zgarishlar (tasdiqlash kutilmoqda)" : "Qo'llangan o'zgarishlar",
+                        juce::Rectangle<float> (vis.getX() + 12, py, vis.getWidth() - 24, 18), juce::Justification::centredLeft);
+            py += 26;
             for (auto& pr : (applied.empty() ? proposals : applied))
             {
                 g.setColour (juce::Colour (0xffd6d3cc)); g.setFont (sans (12.5f));
-                g.drawText (pr.name, juce::Rectangle<float> (x0, y, wR * 0.45f, 20), juce::Justification::centredLeft, true);
+                g.drawText (pr.name, juce::Rectangle<float> (vis.getX() + 12, py, wR * 0.42f, 20), juce::Justification::centredLeft, true);
                 g.setColour (warn); g.setFont (mono (12.5f));
-                g.drawText (pr.fromText, juce::Rectangle<float> (x0 + wR * 0.45f, y, wR * 0.25f, 20), juce::Justification::centredLeft, true);
+                g.drawText (pr.fromText, juce::Rectangle<float> (vis.getX() + wR * 0.45f, py, wR * 0.25f, 20), juce::Justification::centredLeft, true);
                 g.setColour (ok);
-                g.drawText (U ("→ ") + pr.toText, juce::Rectangle<float> (x0 + wR * 0.70f, y, wR * 0.30f, 20), juce::Justification::centredLeft, true);
-                y += 22;
+                g.drawText (U ("→ ") + pr.toText, juce::Rectangle<float> (vis.getX() + wR * 0.70f, py, wR * 0.30f - 12, 20), juce::Justification::centredLeft, true);
+                py += 22;
+            }
+        }
+        else if (slot != nullptr && slot->plugin != nullptr)
+        {
+            const auto params = az::Rack::keyParameters (*slot->plugin, 14);
+            const float colW = (wR - 40) / 2.0f;
+            for (int i = 0; i < (int) params.size(); ++i)
+            {
+                const float px = vis.getX() + 12 + (float) (i % 2) * (colW + 16), ppy = py + (float) (i / 2) * 24;
+                g.setColour (text2); g.setFont (sans (12.0f));
+                g.drawText (params[(size_t) i].name, juce::Rectangle<float> (px, ppy, colW * 0.55f, 20), juce::Justification::centredLeft, true);
+                g.setColour (text); g.setFont (mono (12.0f));
+                g.drawText (params[(size_t) i].value, juce::Rectangle<float> (px + colW * 0.55f, ppy, colW * 0.45f, 20), juce::Justification::centredRight, true);
             }
         }
         else
         {
-            const auto params = az::Rack::keyParameters (*slot->plugin, 8);
-            const float colW = (wR - 16) / 2.0f;
-            for (int i = 0; i < (int) params.size(); ++i)
-            {
-                const float px = x0 + (float) (i % 2) * (colW + 16), py = y + (float) (i / 2) * 22;
-                g.setColour (text2); g.setFont (sans (12.0f));
-                g.drawText (params[(size_t) i].name, juce::Rectangle<float> (px, py, colW * 0.55f, 20), juce::Justification::centredLeft, true);
-                g.setColour (text); g.setFont (mono (12.0f));
-                g.drawText (params[(size_t) i].value, juce::Rectangle<float> (px + colW * 0.55f, py, colW * 0.45f, 20), juce::Justification::centredRight, true);
-            }
-            y += (float) ((params.size() + 1) / 2) * 22;
+            drawWrapped (&g, "Bu plagin DAW insertida turibdi, shuning uchun parametrlarini o'qib bo'lmaydi. Parametrlarni ko'rish va "
+                             "tavsiyani avtomatik qo'llash uchun uni AZ Rack'ka qo'shing (faqat AAX formatidagi plaginlar bundan mustasno).",
+                         vis.reduced (14), sans (12.5f), text3, 3.0f);
         }
-        y += 10;
     }
-    else if (! row->isRack)
-    {
-        drawWrapped (&g, "Bu plagin DAW insertida turibdi, shuning uchun uning parametrlarini o'qib bo'lmaydi. Parametrlarni ko'rish va "
-                         "tavsiyani avtomatik qo'llash uchun uni AZ Rack'ka qo'shing (faqat AAX formatidagi plaginlar bundan mustasno).",
-                     { x0, y, wR, 60 }, sans (12.0f), text3, 2.0f);
-        y += 64;
-    }
+    else if (view == 1)
+        drawSpectrogram (g, vis, hasTs ? &ts : nullptr, specMode);
+    else
+        drawResponse (g, vis, hasTs ? &ts : nullptr, st);
 
-    // Tavsiya matni
-    const float buttonsTop = (float) getHeight() - 106;
-    juce::String advice = message.isNotEmpty() ? message
-                        : st != nullptr && st->valid ? (st->advice.isNotEmpty() ? st->advice : juce::String ("Bu plagin me'yorda ishlayapti - o'zgartirish shart emas."))
-                        : st != nullptr ? st->effect : juce::String ("Tahlil uchun trekni ijro eting.");
-    const juce::Rectangle<float> box (x0, y, wR, juce::jmax (40.0f, buttonsTop - y - 12));
+    // Xulosa va amallar
+    const juce::Rectangle<float> box (x0, 494, wR, 104);
     g.setColour (inset);
     g.fillRoundedRectangle (box, 8.0f);
-    drawWrapped (&g, advice, box.reduced (12, 10), sans (12.5f), juce::Colour (0xffd6d3cc), 3.0f);
+    {
+        auto inner = box.reduced (12, 9);
+        if (message.isNotEmpty())
+            drawWrapped (&g, message, inner, sans (12.5f), juce::Colour (0xffd6d3cc), 3.0f);
+        else if (st != nullptr && st->valid)
+        {
+            const float vh = drawWrapped (&g, st->verdict + (st->confidence > 0 ? "  (aniqlash ishonchi " + juce::String (st->confidence) + "%)" : juce::String()),
+                                          inner, sans (12.5f, true), statusColour (st->status).brighter (0.2f), 2.0f);
+            juce::StringArray acts = juce::StringArray::fromLines (st->advice);
+            acts.removeEmptyStrings();
+            juce::String body;
+            for (int i = 0; i < acts.size() && i < 3; ++i) body << juce::String (i + 1) << ". " << acts[i] << "\n";
+            if (body.isEmpty()) body = "Hech narsa qilish shart emas.";
+            drawWrapped (&g, body.trimEnd(), inner.withTrimmedTop (vh + 4), sans (11.5f), juce::Colour (0xffd6d3cc), 2.0f);
+        }
+        else
+            drawWrapped (&g, st != nullptr ? st->effect : juce::String ("Tahlil uchun trekni ijro eting."), inner, sans (12.5f), text2);
+    }
+
+    // O'zgarishlar jurnali
+    const juce::Rectangle<float> logBox (x0, 604, wR, (float) getHeight() - 106 - 612);
+    g.setColour (text); g.setFont (sans (11.5f, true));
+    g.drawText ("O'zgarishlar va ovoz reaksiyasi", juce::Rectangle<float> (x0, logBox.getY(), wR, 14), juce::Justification::centredLeft);
+    float ly = logBox.getY() + 18;
+    if (slot == nullptr || slot->events.empty())
+    {
+        g.setColour (text3); g.setFont (sans (11.0f));
+        g.drawText (slot != nullptr ? "Plagin oynasida biror parametrni o'zgartiring - AZ ovoz qanday o'zgarganini shu yerda ko'rsatadi."
+                                    : "DAW insertlari uchun parametr o'zgarishlari kuzatilmaydi.",
+                    juce::Rectangle<float> (x0, ly, wR, 16), juce::Justification::centredLeft, true);
+    }
+    else
+    {
+        for (size_t i = 0; i < slot->events.size() && ly + 16 <= logBox.getBottom() + 4; ++i)
+        {
+            const auto& e = slot->events[i];
+            g.setColour (text3); g.setFont (mono (10.5f));
+            g.drawText (e.when.formatted ("%H:%M:%S"), juce::Rectangle<float> (x0, ly, 62, 16), juce::Justification::centredLeft);
+            g.setColour (text); g.setFont (sans (11.5f));
+            const auto change = e.param + ": " + e.from + U (" → ") + e.to;
+            g.drawText (change, juce::Rectangle<float> (x0 + 64, ly, wR * 0.42f, 16), juce::Justification::centredLeft, true);
+            g.setColour (e.reaction.isEmpty() ? text3 : (e.reaction.startsWith ("Ovozda") ? text2 : ok));
+            g.drawText (e.reaction.isEmpty() ? juce::String (proc.isTransportPlaying() ? "o'lchanmoqda..." : "reaksiyani ko'rish uchun Play bosing")
+                                             : e.reaction.fromFirstOccurrenceOf (": ", false, false).isNotEmpty() ? e.reaction.fromFirstOccurrenceOf (": ", false, false) : e.reaction,
+                        juce::Rectangle<float> (x0 + 64 + wR * 0.43f, ly, wR * 0.57f - 64, 16), juce::Justification::centredLeft, true);
+            ly += 17;
+        }
+    }
 }
 
 void RackPage::resized()
@@ -605,6 +878,15 @@ void RackPage::resized()
     bypassButton.setBounds (x0 + 3 * (bw + 8), y1, bw, 42);
     addAfterButton.setBounds (x0, y1 + 52, (wR - 8) / 2, 36);
     removeButton.setBounds (x0 + (wR - 8) / 2 + 8, y1 + 52, (wR - 8) / 2, 36);
+
+    int vx = x0;
+    for (int i = 0; i < 3; ++i)
+    {
+        const int w = i == 0 ? 156 : (i == 1 ? 124 : 112);
+        viewButtons[i].setBounds (vx, 252, w, 30);
+        vx += w + 6;
+    }
+    specModeButton.setBounds (x0 + wR - 150, 252, 150, 30);
 }
 
 //==============================================================================

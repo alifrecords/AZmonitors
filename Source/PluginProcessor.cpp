@@ -41,6 +41,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AZMonitoringProcessor::creat
     layout.add (std::make_unique<Choice> (juce::ParameterID { "standard", 1 }, "Standart", standards, 0, noAuto));
     layout.add (std::make_unique<Choice> (juce::ParameterID { "group", 1 }, "Guruh",
                                           juce::StringArray { "Avto (trek nomi)", "Guruh 1", "Guruh 2", "Guruh 3", "Guruh 4" }, 0, noAuto));
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "autoreset", 1 }, "Har Play'da yangi tahlil", true,
+                                                            juce::AudioParameterBoolAttributes().withAutomatable (false)));
     layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "playonly", 1 }, "Faqat ijro paytida", true,
                                                             juce::AudioParameterBoolAttributes().withAutomatable (false)));
     return layout;
@@ -60,6 +62,7 @@ AZMonitoringProcessor::AZMonitoringProcessor()
     standardParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("standard"));
     groupParam    = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("group"));
     playOnlyParam = dynamic_cast<juce::AudioParameterBool*>   (apvts.getParameter ("playonly"));
+    autoResetParam = dynamic_cast<juce::AudioParameterBool*>  (apvts.getParameter ("autoreset"));
 
     customProfileLoaded = az::Profiles::loadCustom (customProfile);
 
@@ -69,7 +72,7 @@ AZMonitoringProcessor::AZMonitoringProcessor()
     az::ProbeRegistry::instance().add (point);
 
     analysisThread->thread.addTimeSliceClient (this);
-    startTimer (400);
+    startTimer (100);
 }
 
 AZMonitoringProcessor::~AZMonitoringProcessor()
@@ -119,6 +122,8 @@ void AZMonitoringProcessor::processAudio (juce::AudioBuffer<Sample>& buffer)
             playing = pos->getIsPlaying();
             if (auto s = pos->getTimeInSeconds()) { t = *s; timeValid = true; }
         }
+    transportKnown = playheadKnown;
+    transportPlaying = playheadKnown ? playing : true;
     const bool analyse = ! (playOnlyParam != nullptr && playOnlyParam->get() && playheadKnown && ! playing);
 
     // Rack bo'sh yoki Probe rejimi: signal o'zgarmaydi
@@ -176,6 +181,8 @@ int AZMonitoringProcessor::useTimeSlice()
         inputAnalyzer.runBackground();
         for (auto& a : rack.getAnalyzers())
             a->runBackground();
+        for (auto& t : rack.getTransfers())
+            t->runBackground();
     }
 
     point->mode = isProbe() ? 1 : 0;
@@ -307,6 +314,16 @@ az::Report AZMonitoringProcessor::buildReport (az::Features& finalOut, int& prob
             const auto gs = sl->getGainStats();
             cp.grRange = gs.grRange();
             cp.grSlope = gs.slope();
+            cp.grCorr = gs.correlation();
+            const auto ts = sl->transfer->getSnapshot();
+            if (ts.longValid)
+            {
+                cp.hasTransfer = true;
+                cp.h = ts.hLong;
+                cp.coh = ts.cohLong;
+                cp.usable = ts.usable;
+                cp.cohAvg = ts.cohAvgLong;
+            }
             pts.push_back (std::move (cp));
         }
     }
@@ -346,6 +363,17 @@ void AZMonitoringProcessor::updateLatency()
 
 void AZMonitoringProcessor::timerCallback()
 {
+    // Play / Stop: Play bosilganda tahlil yangidan boshlanadi (sozlamalarda o'chirish mumkin)
+    const bool playingNow = transportPlaying.load();
+    if (transportKnown.load() && playingNow && ! wasPlaying && autoResetParam != nullptr && autoResetParam->get() && ! isProbe())
+        resetAnalysis();
+    wasPlaying = playingNow;
+
+    rack.pollParameters (playingNow, 0.1);
+
+    if (++timerTicks % 4 != 0)
+        return;   // quyidagilar ~2.5 Hz yetarli
+
     juce::ValueTree pending;
     {
         const juce::ScopedLock sl (pendingLock);

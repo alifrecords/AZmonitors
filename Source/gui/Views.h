@@ -145,6 +145,8 @@ private:
     juce::ComboBox mode, group, source, standard;
     std::unique_ptr<ComboAttach> modeA, groupA, sourceA, standardA;
     juce::ToggleButton playOnly { "Faqat ijro (Play) paytida tahlil qilish" };
+    juce::ToggleButton autoReset { "Har Play bosilganda tahlilni yangidan boshlash" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoResetA;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> playOnlyA;
     juce::TextButton makeProfile { juce::String::fromUTF8 ("Etalon treklarni tanlash…") };
     juce::String profileStatus;

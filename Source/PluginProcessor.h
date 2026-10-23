@@ -85,6 +85,11 @@ public:
     juce::String addPlugin (const juce::PluginDescription&, int index);
     void updateLatency();
 
+    /** Transport holati (audio oqimi yozadi) */
+    std::atomic<bool> transportPlaying { false }, transportKnown { false };
+    bool isTransportPlaying() const noexcept { return transportPlaying.load(); }
+    bool isTransportKnown() const noexcept { return transportKnown.load(); }
+
     bool saveRackPreset (const juce::File&) const;
     juce::String loadRackPreset (const juce::File&);
 
@@ -115,6 +120,9 @@ private:
     juce::AudioParameterChoice* standardParam = nullptr;
     juce::AudioParameterChoice* groupParam = nullptr;
     juce::AudioParameterBool* playOnlyParam = nullptr;
+    juce::AudioParameterBool* autoResetParam = nullptr;
+    bool wasPlaying = false;
+    int timerTicks = 0;
 
     mutable juce::SpinLock textLock;
     juce::String trackName, pluginLabel;

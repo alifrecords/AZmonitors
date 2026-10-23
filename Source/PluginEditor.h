@@ -15,6 +15,7 @@ public:
     void resized() override;
     void selectPage (int i) { if (i >= 0 && i < 4) { tabs[i].setToggleState (true, juce::dontSendNotification); showPage (i); timerCallback(); } }
     void showBrowser (int insertIndex) { browser.open (insertIndex, data); }
+    void selectRackSlot (juce::uint32 id, int view) { chainPage.selectRackSlot (id); chainPage.setView (view); timerCallback(); }
 
 private:
     void timerCallback() override;
@@ -50,6 +51,7 @@ public:
     void paint (juce::Graphics& g) override { g.fillAll (az::ui::bg); }
     void selectPage (int i) { root.selectPage (i); }
     void showBrowser (int i) { root.showBrowser (i); }
+    void selectRackSlot (juce::uint32 id, int view) { root.selectRackSlot (id, view); }
 
 private:
     az::ui::AZLookAndFeel lookAndFeel;

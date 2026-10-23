@@ -749,6 +749,8 @@ SettingsPage::SettingsPage (AZMonitoringProcessor& p) : proc (p)
     standardA = std::make_unique<ComboAttach> (proc.apvts, "standard", standard);
     addAndMakeVisible (playOnly);
     playOnlyA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "playonly", playOnly);
+    addAndMakeVisible (autoReset);
+    autoResetA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "autoreset", autoReset);
 
     makeProfile.getProperties().set ("bold", true);
     makeProfile.setColour (juce::TextButton::buttonColourId, accent);
@@ -818,7 +820,7 @@ void SettingsPage::paint (juce::Graphics& g)
            "Manba: \"Vokal treki\" — vokal spektri va dinamikasi janr etaloniga solishtiriladi. \"Master\" — master bus'da: "
            "loudness (LUFS), True Peak va PLR tanlangan standartga solishtiriladi.\n\n"
            "Barcha namuna chastotalari (44.1 – 384 kHz) va 64-bit (double) ishlov qo'llab-quvvatlanadi."),
-        { 22, 330, 536, 440 }, sans (13.0f), text2, 3.0f);
+        { 22, 344, 536, 440 }, sans (13.0f), text2, 3.0f);
 
     drawTitle (g, U ("Maxsus etalon — o'z standartingiz"), { 618, 16, w - 640, 24 });
     drawWrapped (&g,
@@ -855,7 +857,8 @@ void SettingsPage::resized()
     group.setBounds (150, 112, 400, 36);
     source.setBounds (150, 164, 400, 36);
     standard.setBounds (150, 216, 400, 36);
-    playOnly.setBounds (18, 270, 540, 30);
+    playOnly.setBounds (18, 266, 540, 28);
+    autoReset.setBounds (18, 296, 540, 28);
     makeProfile.setBounds (618, 182, 260, 40);
 }
 

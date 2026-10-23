@@ -163,6 +163,7 @@ int main (int argc, char* argv[])
 
     auto mon = std::make_unique<AZMonitoringProcessor>();
     setChoice (*mon, "group", 1);
+    if (auto* ar = dynamic_cast<juce::AudioParameterBool*> (mon->apvts.getParameter ("autoreset"))) ar->setValueNotifyingHost (0.0f);
     mon->setPluginLabel ("AZ Monitoring");
     mon->setPlayConfigDetails (2, 2, sr, 512); mon->setPlayHead (&headMon); mon->prepareToPlay (sr, 512);
 
@@ -173,13 +174,14 @@ int main (int argc, char* argv[])
     pump (100);
     const auto effects = cat.getEffects();
     std::printf ("Katalog: %d ta effekt (%s)\n", effects.size(), cat.getStatus().toRawUTF8());
-    juce::PluginDescription eqDesc, compDesc;
+    juce::PluginDescription eqDesc, compDesc, satDesc;
     for (auto& d : effects)
     {
         std::printf ("  - %s | %s | %s | toifa: %s\n", d.name.toRawUTF8(), d.manufacturerName.toRawUTF8(), d.pluginFormatName.toRawUTF8(),
                      az::PluginCatalog::categoryOf (d).toRawUTF8());
         if (d.name == "AZTest EQ") eqDesc = d;
         if (d.name == "AZTest Comp") compDesc = d;
+        if (d.name == "AZTest Sat") satDesc = d;
     }
     check (eqDesc.name.isNotEmpty() && compDesc.name.isNotEmpty(), "Test plaginlari katalogda topildi");
     check (! [&] { for (auto& d : effects) if (d.manufacturerName.contains ("Azimxodjayev")) return true; return false; }(),
@@ -190,6 +192,7 @@ int main (int argc, char* argv[])
     check (mon->addPlugin (compDesc, -1).isEmpty(), "R2 Comp yuklandi");
     check (mon->addPlugin (compDesc, -1).isEmpty(), "R3 Comp yuklandi");
     check (mon->addPlugin (eqDesc, -1).isEmpty(), "R4 EQ yuklandi");
+    check (mon->addPlugin (satDesc, -1).isEmpty(), "R5 Saturatsiya yuklandi");
     {
         auto s = mon->rack.getSlots();
         setParam (*s[0]->plugin, "Frequency", "320"); setParam (*s[0]->plugin, "Gain", "-3.5");
@@ -197,7 +200,8 @@ int main (int argc, char* argv[])
         setParam (*s[2]->plugin, "Threshold", "-42"); setParam (*s[2]->plugin, "Ratio", "12"); setParam (*s[2]->plugin, "Attack", "0.5");
         setParam (*s[2]->plugin, "Release", "30"); setParam (*s[2]->plugin, "Output", "10");
         setParam (*s[3]->plugin, "Frequency", "320"); setParam (*s[3]->plugin, "Gain", "4");
-        for (int i = 0; i < 4; ++i) std::printf ("  R%d %s: %s\n", i + 1, s[(size_t) i]->displayName().toRawUTF8(), s[(size_t) i]->formatLabel().toRawUTF8());
+        setParam (*s[4]->plugin, "Drive", "30");
+        for (int i = 0; i < 5; ++i) std::printf ("  R%d %s: %s\n", i + 1, s[(size_t) i]->displayName().toRawUTF8(), s[(size_t) i]->formatLabel().toRawUTF8());
     }
     mon->prepareToPlay (sr, 512);
     check (mon->getLatencySamples() == 512, "PDC: rack kechikishi 2 x 256 = " + juce::String (mon->getLatencySamples()) + " sample DAW ga xabar qilindi");
@@ -215,6 +219,14 @@ int main (int argc, char* argv[])
         block.copyFrom (0, 0, dawOut, 0, pos, len); block.copyFrom (1, 0, dawOut, 0, pos, len);
         headMon.time = pos / sr; mon->processBlock (block, midi);
         if ((pos / 512) % 90 == 0) juce::Thread::sleep (15);
+        if (pos >= (int) (sr * 19) && pos < (int) (sr * 24)) juce::Thread::sleep (3);   // o'zgarish atrofida real vaqtga yaqin
+        if ((pos / 512) % 9 == 0)   // ~0.1 s
+        {
+            if (pos >= (int) (sr * 20) && pos < (int) (sr * 20) + 512 * 9)
+                setParam (*mon->rack.getSlots()[3]->plugin, "Gain", "8");   // foydalanuvchi knobni buradi
+            juce::Thread::sleep (2);
+            mon->rack.pollParameters (true, 0.1);
+        }
     }
     juce::Thread::sleep (1500);
 
@@ -223,7 +235,28 @@ int main (int argc, char* argv[])
     std::printf ("\nZanjir: %d/100, %d bosqich\n", rep.chainScore, (int) rep.stages.size());
     for (auto& st : rep.stages)
         std::printf ("  [%s] %-12s %-28s rack=%d  %s\n", az::statusLabel (st.status).toRawUTF8(), st.slot.toRawUTF8(), st.name.toRawUTF8(), st.rackSlot, st.effect.toRawUTF8());
-    check (rep.stages.size() == 5, "5 bosqich: 1 DAW (probe orqali) + 4 rack plagini");
+    check (rep.stages.size() == 6, "6 bosqich: 1 DAW (probe orqali) + 5 rack plagini");
+    if (rep.stages.size() == 6)
+    {
+        const auto& r1 = rep.stages[1]; const auto& r2 = rep.stages[2]; const auto& r3 = rep.stages[3];
+        const auto& r4 = rep.stages[4]; const auto& r5 = rep.stages[5];
+        const float m320 = r1.bandDelta[(size_t) az::bandForFreq (320.0f)];
+        check (r1.measuredResponse && std::abs (m320 - (-3.5f)) < 0.8f, "R1 EQ: o'lchangan javob 320 Hz = " + juce::String (m320, 2) + " dB (sozlangan -3.5)");
+        check (r1.role == "EQ / tembr" && r1.confidence >= 90, "R1 vazifasi: " + r1.role + " (ishonch " + juce::String (r1.confidence) + "%)");
+        check (r2.role.startsWith ("Kompressor"), "R2 vazifasi: " + r2.role + " (ishonch " + juce::String (r2.confidence) + "%)");
+        check (r3.role.startsWith ("Kompressor"), "R3 vazifasi: " + r3.role + " (ishonch " + juce::String (r3.confidence) + "%)");
+        check (r4.role == "EQ / tembr", "R4 vazifasi: " + r4.role + " (ishonch " + juce::String (r4.confidence) + "%)");
+        check (r5.role.contains ("Saturatsiya"), "R5 vazifasi: " + r5.role + " (ishonch " + juce::String (r5.confidence) + "%)");
+        check (r4.advice.contains ("konflikt"), "R1/R4 EQ konflikti aniqlandi");
+        for (auto& st : rep.stages) std::printf ("  XULOSA %-6s %s\n", st.slot.toRawUTF8(), st.verdict.toRawUTF8());
+    }
+    {
+        auto s = mon->rack.getSlots();
+        const auto& ev = s[3]->events;
+        check (! ev.empty() && ev.front().param == "Gain", "R4 parametr o'zgarishi yozildi: " + (ev.empty() ? juce::String ("-") : ev.front().param + " " + ev.front().from + " -> " + ev.front().to));
+        if (! ev.empty())
+            check (ev.front().reaction.contains ("+4") || ev.front().reaction.contains ("+3."), "Reaksiya: " + ev.front().reaction);
+    }
 
     // 4) Tavsiyani qo'llash -> qaytarish
     {
@@ -254,9 +287,9 @@ int main (int argc, char* argv[])
         restored.prepareToPlay (sr, 512);
         restored.setStateInformation (mb.getData(), (int) mb.getSize());
         auto rs = restored.rack.getSlots();
-        check (rs.size() == 4, "Holat tiklandi: " + juce::String ((int) rs.size()) + " ta plagin");
-        if (rs.size() == 4 && rs[2]->plugin != nullptr)
-            check (paramText (*rs[2]->plugin, "Ratio") == "12.0:1" && paramText (*rs[3]->plugin, "Gain") == "4.0 dB",
+        check (rs.size() == 5, "Holat tiklandi: " + juce::String ((int) rs.size()) + " ta plagin");
+        if (rs.size() == 5 && rs[2]->plugin != nullptr)
+            check (paramText (*rs[2]->plugin, "Ratio") == "12.0:1" && paramText (*rs[3]->plugin, "Gain") == "8.0 dB",
                    "Plagin parametrlari tiklandi (R3 Ratio " + paramText (*rs[2]->plugin, "Ratio") + ", R4 Gain " + paramText (*rs[3]->plugin, "Gain") + ")");
         check (restored.getLatencySamples() == 512, "Tiklangandan keyin PDC = " + juce::String (restored.getLatencySamples()));
         restored.rack.closeAllEditors();
@@ -301,7 +334,13 @@ int main (int argc, char* argv[])
         std::unique_ptr<AZMonitoringEditor> ed (dynamic_cast<AZMonitoringEditor*> (mon->createEditor()));
         ed->setSize (1280, 900);
         ed->selectPage (1); pump (400);
+        auto sl = mon->rack.getSlots();
+        ed->selectRackSlot (sl[3]->id, 0); pump (400);
         save (*ed, outDir.getChildFile ("6_rack.png"));
+        ed->selectRackSlot (sl[2]->id, 1); pump (400);
+        save (*ed, outDir.getChildFile ("8_spektrogramma.png"));
+        ed->selectRackSlot (sl[0]->id, 0); pump (300);
+        save (*ed, outDir.getChildFile ("9_eq_egri.png"));
         ed->selectPage (0); pump (300);
         save (*ed, outDir.getChildFile ("1_tahlil.png"));
         ed->selectPage (1); ed->showBrowser (-1); pump (400);

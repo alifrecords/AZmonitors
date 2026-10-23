@@ -19,6 +19,9 @@ struct Check
 struct StageResult
 {
     juce::String slot, name, role, effect, advice;
+    juce::String verdict;               // bitta jumlalik xulosa
+    int confidence = 0;                 // vazifa aniqlanishi ishonchi, %
+    bool measuredResponse = false;      // bandDelta = o'lchangan H(f) (rack), aks holda spektrlar farqi
     Status status = Status::NoData;
     int score = 0;
     bool valid = false;
@@ -39,6 +42,11 @@ struct ChainPoint
     Features f;
     int rackSlot = -1;
     float grRange = -1, grSlope = 0;    // faqat rack slotlari uchun (kirish/chiqish to'g'ridan-to'g'ri)
+    float grCorr = 0;                   // kirish darajasi va gain korrelyatsiyasi
+    bool hasTransfer = false;           // H(f) o'lchangan (rack slotlari)
+    std::array<float, kNumBands> h {}, coh {};
+    std::array<bool, kNumBands> usable {};
+    float cohAvg = 1.0f;
 };
 
 struct Report
